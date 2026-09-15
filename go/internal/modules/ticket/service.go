@@ -1,76 +1,74 @@
 package ticket
 
 import (
+	"encoding/json"
 	"fmt"
-	"os"
-	"path/filepath"
+	"log"
+	"math/rand"
+	"strings"
 	"sync"
 	"time"
 
 	"botdis/internal/discord"
+	"botdis/internal/modules/chatai"
 	"botdis/internal/storage"
 
 	"github.com/bwmarrin/discordgo"
 )
 
 const (
-	BtnCreate     = "ticket_create"
-	BtnClose      = "ticket_close"
-	BtnClaim      = "ticket_claim"
-	BtnTranscript = "ticket_transcript"
-	BtnAddUser    = "ticket_add_user"
-	BtnRemoveUser = "ticket_remove_user"
-	BtnRename     = "ticket_rename"
-	BtnDelete     = "ticket_delete"
-
-	ModalRename     = "modal_ticket_rename"
-	ModalAddUser    = "modal_ticket_add_user"
-	ModalRemoveUser = "modal_ticket_remove_user"
+	BtnCreate         = "ticket_create"
+	BtnClose          = "ticket_close"
+	ModalCreateTicket = "modal_ticket_create"
+	InputContent      = "ticket_content_input"
 )
 
 type Service struct {
 	store         *storage.MySQLStore
+	aiService     *chatai.Service
 	lock          sync.RWMutex
 	userCooldowns map[string]time.Time
-	activeTickets map[string]string
+	activeTickets map[string]string // userID -> channelID
 }
 
-func NewService(store *storage.MySQLStore) *Service {
+func NewService(store *storage.MySQLStore, aiService *chatai.Service) *Service {
 	return &Service{
 		store:         store,
+		aiService:     aiService,
 		userCooldowns: make(map[string]time.Time),
 		activeTickets: make(map[string]string),
 	}
 }
 
 func (s *Service) RegisterRoutes(r *discord.Router) {
-	r.RegisterCommand("ticket", s.handleTicketCommand)
-
-	r.RegisterComponent(BtnCreate, s.handleCreateTicket)
+	r.RegisterComponent(BtnCreate, s.handlePromptCreateTicket)
 	r.RegisterComponent(BtnClose, s.handleCloseTicket)
-	r.RegisterComponent(BtnClaim, s.handleClaimTicket)
-	r.RegisterComponent(BtnDelete, s.handleDeleteTicket)
-	r.RegisterComponent(BtnRename, s.handlePromptRename)
-	r.RegisterComponent(BtnAddUser, s.handlePromptAddUser)
-	r.RegisterComponent(BtnRemoveUser, s.handlePromptRemoveUser)
-	r.RegisterComponent(BtnTranscript, s.handleTranscript)
+	r.RegisterModal(ModalCreateTicket, s.handleSubmitTicketProblem)
+	r.RegisterModal("modal_ticket_create_problem", s.handleSubmitTicketProblem)
+}
 
-	r.RegisterModal(ModalRename, s.handleSubmitRename)
-	r.RegisterModal(ModalAddUser, s.handleSubmitAddUser)
-	r.RegisterModal(ModalRemoveUser, s.handleSubmitRemoveUser)
+func (s *Service) HandleChannelDelete(sess *discordgo.Session, ch *discordgo.ChannelDelete) {
+	if ch == nil || ch.Channel == nil {
+		return
+	}
+	chID := ch.Channel.ID
+
+	s.lock.Lock()
+	for uID, cID := range s.activeTickets {
+		if cID == chID {
+			delete(s.activeTickets, uID)
+		}
+	}
+	s.lock.Unlock()
+
+	_ = s.store.CloseTicket(chID, "Kênh bị xóa trên Discord")
 }
 
 func BuildSupportPanelEmbed() *discordgo.MessageEmbed {
 	return &discordgo.MessageEmbed{
-		Title: "Support",
-		Description: "• Chỉ tạo Hỗ Trợ nếu bạn có vấn đề về nạp tiền, bảo hành và lỗi ở trên website.\n" +
-			"• Vui lòng không tạo Phiếu Hỗ Trợ cho vui.\n" +
-			"• Tạo Phiếu Hỗ Trợ không nhắn gì sẽ Mute 24h.\n" +
-			"• Xin cảm ơn.",
-		Color: 0x2ecc71,
-		Footer: &discordgo.MessageEmbedFooter{
-			Text: "TicketTool.xyz - Ticketing without clutter",
-		},
+		Title:       "Hỗ trợ",
+		Description: "Bấm nút bên dưới để tạo ticket hỗ trợ",
+		Color:       0x2ecc71,
 	}
 }
 
@@ -79,76 +77,17 @@ func BuildSupportPanelActionRow() []discordgo.MessageComponent {
 		discordgo.ActionsRow{
 			Components: []discordgo.MessageComponent{
 				discordgo.Button{
-					Label:    "Hỗ Trợ",
-					Style:    discordgo.DangerButton,
+					Label:    "Hỗ trợ",
+					Emoji:    &discordgo.ComponentEmoji{Name: "📩"},
+					Style:    discordgo.SuccessButton,
 					CustomID: BtnCreate,
-					Emoji: &discordgo.ComponentEmoji{
-						Name: "📩",
-					},
 				},
 			},
 		},
 	}
 }
 
-func BuildTicketActionRows() []discordgo.MessageComponent {
-	return []discordgo.MessageComponent{
-		discordgo.ActionsRow{
-			Components: []discordgo.MessageComponent{
-				discordgo.Button{Label: "Đóng ticket", Style: discordgo.DangerButton, CustomID: BtnClose, Emoji: &discordgo.ComponentEmoji{Name: "🔒"}},
-				discordgo.Button{Label: "Claim ticket", Style: discordgo.SecondaryButton, CustomID: BtnClaim, Emoji: &discordgo.ComponentEmoji{Name: "🟡"}},
-				discordgo.Button{Label: "Transcript", Style: discordgo.PrimaryButton, CustomID: BtnTranscript, Emoji: &discordgo.ComponentEmoji{Name: "📄"}},
-			},
-		},
-		discordgo.ActionsRow{
-			Components: []discordgo.MessageComponent{
-				discordgo.Button{Label: "Thêm người", Style: discordgo.SuccessButton, CustomID: BtnAddUser, Emoji: &discordgo.ComponentEmoji{Name: "➕"}},
-				discordgo.Button{Label: "Xóa người", Style: discordgo.SecondaryButton, CustomID: BtnRemoveUser, Emoji: &discordgo.ComponentEmoji{Name: "➖"}},
-				discordgo.Button{Label: "Đổi tên", Style: discordgo.SecondaryButton, CustomID: BtnRename, Emoji: &discordgo.ComponentEmoji{Name: "✏️"}},
-				discordgo.Button{Label: "Xóa ticket", Style: discordgo.DangerButton, CustomID: BtnDelete, Emoji: &discordgo.ComponentEmoji{Name: "🗑️"}},
-			},
-		},
-	}
-}
-
-func (s *Service) handleTicketCommand(sess *discordgo.Session, i *discordgo.InteractionCreate) {
-	data := i.ApplicationCommandData()
-	if len(data.Options) == 0 {
-		return
-	}
-
-	subCmd := data.Options[0]
-	switch subCmd.Name {
-	case "send":
-		channelID := i.ChannelID
-		if len(subCmd.Options) > 0 {
-			channelID = subCmd.Options[0].ChannelValue(sess).ID
-		}
-
-		embed := BuildSupportPanelEmbed()
-		components := BuildSupportPanelActionRow()
-
-		_, err := sess.ChannelMessageSendComplex(channelID, &discordgo.MessageSend{
-			Embeds:     []*discordgo.MessageEmbed{embed},
-			Components: components,
-		})
-
-		msg := fmt.Sprintf("✅ Đã gửi bảng Hỗ Trợ vào kênh <#%s>", channelID)
-		if err != nil {
-			msg = fmt.Sprintf("❌ Không thể gửi bảng Hỗ Trợ: %v", err)
-		}
-
-		_ = sess.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-			Type: discordgo.InteractionResponseChannelMessageWithSource,
-			Data: &discordgo.InteractionResponseData{
-				Content: msg,
-				Flags:   discordgo.MessageFlagsEphemeral,
-			},
-		})
-	}
-}
-
-func (s *Service) handleCreateTicket(sess *discordgo.Session, i *discordgo.InteractionCreate) {
+func (s *Service) handlePromptCreateTicket(sess *discordgo.Session, i *discordgo.InteractionCreate) {
 	user := i.Member.User
 	guildID := i.GuildID
 
@@ -158,7 +97,7 @@ func (s *Service) handleCreateTicket(sess *discordgo.Session, i *discordgo.Inter
 		_ = sess.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 			Type: discordgo.InteractionResponseChannelMessageWithSource,
 			Data: &discordgo.InteractionResponseData{
-				Content: "Vui lòng đợi vài giây trước khi tạo ticket tiếp theo.",
+				Content: "Vui lòng đợi vài giây trước khi tạo ticket tiếp theo",
 				Flags:   discordgo.MessageFlagsEphemeral,
 			},
 		})
@@ -166,41 +105,88 @@ func (s *Service) handleCreateTicket(sess *discordgo.Session, i *discordgo.Inter
 	}
 	s.userCooldowns[user.ID] = time.Now()
 
-	if chID, found := s.store.GetActiveTicket(guildID, user.ID); found {
-		s.lock.Unlock()
-		_ = sess.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-			Type: discordgo.InteractionResponseChannelMessageWithSource,
-			Data: &discordgo.InteractionResponseData{
-				Content: fmt.Sprintf("Bạn đã có ticket đang mở: <#%s>", chID),
-				Flags:   discordgo.MessageFlagsEphemeral,
-			},
-		})
-		return
+	chID, found := s.activeTickets[user.ID]
+	if !found {
+		chID, found = s.store.GetActiveTicket(guildID, user.ID)
+	}
+	if found && chID != "" {
+		ch, err := sess.Channel(chID)
+		if err != nil || ch == nil {
+			_ = s.store.CloseTicket(chID, "Kênh cũ đã bị xóa")
+			delete(s.activeTickets, user.ID)
+		} else {
+			s.lock.Unlock()
+			_ = sess.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+				Type: discordgo.InteractionResponseChannelMessageWithSource,
+				Data: &discordgo.InteractionResponseData{
+					Content: fmt.Sprintf("Bạn đã có ticket đang mở <#%s>", chID),
+					Flags:   discordgo.MessageFlagsEphemeral,
+				},
+			})
+			return
+		}
 	}
 	s.lock.Unlock()
+
+	_ = sess.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+		Type: discordgo.InteractionResponseModal,
+		Data: &discordgo.InteractionResponseData{
+			CustomID: ModalCreateTicket,
+			Title:    "Hỗ trợ",
+			Components: []discordgo.MessageComponent{
+				discordgo.ActionsRow{
+					Components: []discordgo.MessageComponent{
+						discordgo.TextInput{
+							CustomID:    InputContent,
+							Label:       "Mô tả",
+							Placeholder: "Nhập nội dung...",
+							Style:       discordgo.TextInputParagraph,
+							Required:    false,
+							MinLength:   0,
+							MaxLength:   2000,
+						},
+					},
+				},
+			},
+		},
+	})
+}
+
+func (s *Service) handleSubmitTicketProblem(sess *discordgo.Session, i *discordgo.InteractionCreate) {
+	user := i.Member.User
+	guildID := i.GuildID
+
+	data := i.ModalSubmitData()
+	problemText := ""
+	if len(data.Components) > 0 {
+		if row, ok := data.Components[0].(*discordgo.ActionsRow); ok && len(row.Components) > 0 {
+			if input, ok := row.Components[0].(*discordgo.TextInput); ok {
+				problemText = input.Value
+			}
+		}
+	}
+	problemText = strings.TrimSpace(problemText)
+	if problemText == "" {
+		problemText = "Hỗ trợ"
+	}
 
 	_ = sess.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 		Type: discordgo.InteractionResponseDeferredChannelMessageWithSource,
 		Data: &discordgo.InteractionResponseData{Flags: discordgo.MessageFlagsEphemeral},
 	})
 
-	channels, _ := sess.GuildChannels(guildID)
-	var categoryID string
-	for _, ch := range channels {
-		if ch.Type == discordgo.ChannelTypeGuildCategory && (ch.Name == "🎟️ HỖ TRỢ" || ch.Name == "HỖ TRỢ" || ch.Name == "Tickets") {
-			categoryID = ch.ID
-			break
-		}
-	}
+	aiTitle, channelSlug := s.aiService.GenerateTicketMeta(problemText)
 
-	if categoryID == "" {
-		cat, err := sess.GuildChannelCreate(guildID, "🎟️ HỖ TRỢ", discordgo.ChannelTypeGuildCategory)
-		if err == nil && cat != nil {
+	tCfg := s.store.GetTicketConfig(guildID)
+
+	var categoryID string
+	if tCfg.TicketCategoryID != "" {
+		cat, err := sess.Channel(tCfg.TicketCategoryID)
+		if err == nil && cat != nil && cat.Type == discordgo.ChannelTypeGuildCategory {
 			categoryID = cat.ID
 		}
 	}
 
-	ticketName := fmt.Sprintf("ho-tro-%04d", time.Now().Nanosecond()%10000)
 	overwrites := []*discordgo.PermissionOverwrite{
 		{
 			ID:   guildID,
@@ -214,8 +200,25 @@ func (s *Service) handleCreateTicket(sess *discordgo.Session, i *discordgo.Inter
 		},
 	}
 
+	if tCfg.StaffRoleID != "" {
+		overwrites = append(overwrites, &discordgo.PermissionOverwrite{
+			ID:    tCfg.StaffRoleID,
+			Type:  discordgo.PermissionOverwriteTypeRole,
+			Allow: discordgo.PermissionViewChannel | discordgo.PermissionSendMessages | discordgo.PermissionReadMessageHistory | discordgo.PermissionAttachFiles | discordgo.PermissionEmbedLinks,
+		})
+	}
+
+	randomCode := rand.Intn(9000) + 1000
+	if len(channelSlug) > 26 {
+		channelSlug = channelSlug[:26]
+	}
+	channelName := fmt.Sprintf("%s-%04d", channelSlug, randomCode)
+	if len(channelName) > 32 {
+		channelName = channelName[:32]
+	}
+
 	ch, err := sess.GuildChannelCreateComplex(guildID, discordgo.GuildChannelCreateData{
-		Name:                 ticketName,
+		Name:                 channelName,
 		Type:                 discordgo.ChannelTypeGuildText,
 		ParentID:             categoryID,
 		PermissionOverwrites: overwrites,
@@ -223,7 +226,7 @@ func (s *Service) handleCreateTicket(sess *discordgo.Session, i *discordgo.Inter
 
 	if err != nil {
 		_, _ = sess.FollowupMessageCreate(i.Interaction, true, &discordgo.WebhookParams{
-			Content: fmt.Sprintf("Không thể tạo kênh ticket: %v", err),
+			Content: fmt.Sprintf("Không thể tạo kênh ticket %v", err),
 		})
 		return
 	}
@@ -232,239 +235,211 @@ func (s *Service) handleCreateTicket(sess *discordgo.Session, i *discordgo.Inter
 	s.activeTickets[user.ID] = ch.ID
 	s.lock.Unlock()
 
-	_ = s.store.CreateTicket(ch.ID, guildID, user.ID, user.Username, ticketName, time.Now().Nanosecond()%10000)
-	s.store.LogTicketAction(guildID, ch.ID, "Tạo ticket mới", user.ID, "", "")
+	_ = s.store.CreateTicket(ch.ID, guildID, user.ID, user.Username, channelName, randomCode)
+	s.store.LogTicketAction(guildID, ch.ID, "Tạo ticket mới", user.ID, "", problemText)
+
+	mentionText := fmt.Sprintf("<@%s>", user.ID)
+	if tCfg.StaffRoleID != "" {
+		mentionText += fmt.Sprintf(" <@&%s>", tCfg.StaffRoleID)
+	}
 
 	welcomeEmbed := &discordgo.MessageEmbed{
-		Title:       fmt.Sprintf("📩 Phiếu Hỗ Trợ #%s", ch.Name),
-		Description: fmt.Sprintf("Xin chào <@%s>!\nVui lòng trình bày chi tiết vấn đề của bạn kèm hình ảnh hoặc mã giao dịch.\nĐội ngũ hỗ trợ sẽ phản hồi trong giây lát.", user.ID),
+		Title:       aiTitle,
+		Description: fmt.Sprintf("Người tạo <@%s>\nMô tả %s", user.ID, problemText),
 		Color:       0x2ecc71,
-		Fields: []*discordgo.MessageEmbedField{
-			{Name: "👤 Người tạo", Value: fmt.Sprintf("<@%s>", user.ID), Inline: true},
-			{Name: "📌 Trạng thái", Value: "Đang chờ hỗ trợ", Inline: true},
+	}
+
+	closeBtnRow := []discordgo.MessageComponent{
+		discordgo.ActionsRow{
+			Components: []discordgo.MessageComponent{
+				discordgo.Button{
+					Label:    "Đóng",
+					Style:    discordgo.DangerButton,
+					CustomID: BtnClose,
+				},
+			},
 		},
 	}
 
 	_, _ = sess.ChannelMessageSendComplex(ch.ID, &discordgo.MessageSend{
-		Content:    fmt.Sprintf("<@%s>", user.ID),
+		Content:    mentionText,
 		Embeds:     []*discordgo.MessageEmbed{welcomeEmbed},
-		Components: BuildTicketActionRows(),
+		Components: closeBtnRow,
 	})
 
 	_, _ = sess.FollowupMessageCreate(i.Interaction, true, &discordgo.WebhookParams{
-		Content: fmt.Sprintf("✅ Ticket của bạn đã được tạo: <#%s>", ch.ID),
+		Content: fmt.Sprintf("Ticket đã được tạo tại <#%s>", ch.ID),
 	})
+}
+
+func (s *Service) fetchAllChannelMessages(sess *discordgo.Session, channelID string) ([]storage.TicketMessageRecord, error) {
+	var allRecords []storage.TicketMessageRecord
+	lastID := ""
+
+	for {
+		msgs, err := sess.ChannelMessages(channelID, 100, lastID, "", "")
+		if err != nil {
+			return allRecords, err
+		}
+		if len(msgs) == 0 {
+			break
+		}
+
+		for _, m := range msgs {
+			var atts []storage.TicketMessageAttachment
+			for _, a := range m.Attachments {
+				atts = append(atts, storage.TicketMessageAttachment{
+					URL:         a.URL,
+					ProxyURL:    a.ProxyURL,
+					Filename:    a.Filename,
+					Size:        a.Size,
+					ContentType: a.ContentType,
+					Width:       a.Width,
+					Height:      a.Height,
+				})
+			}
+
+			embedsJSON := ""
+			if len(m.Embeds) > 0 {
+				if b, err := json.Marshal(m.Embeds); err == nil {
+					embedsJSON = string(b)
+				}
+			}
+
+			authorName := "Unknown"
+			authorID := ""
+			if m.Author != nil {
+				authorName = m.Author.Username
+				authorID = m.Author.ID
+			}
+
+			allRecords = append(allRecords, storage.TicketMessageRecord{
+				TicketChannelID: channelID,
+				MessageID:       m.ID,
+				AuthorID:        authorID,
+				AuthorName:      authorName,
+				Content:         m.Content,
+				Attachments:     atts,
+				EmbedsJSON:      embedsJSON,
+				SentAt:          m.Timestamp,
+			})
+		}
+
+		lastID = msgs[len(msgs)-1].ID
+		if len(msgs) < 100 {
+			break
+		}
+	}
+
+	for i, j := 0, len(allRecords)-1; i < j; i, j = i+1, j-1 {
+		allRecords[i], allRecords[j] = allRecords[j], allRecords[i]
+	}
+
+	return allRecords, nil
 }
 
 func (s *Service) handleCloseTicket(sess *discordgo.Session, i *discordgo.InteractionCreate) {
-	ch, err := sess.Channel(i.ChannelID)
-	if err != nil {
-		return
-	}
+	chID := i.ChannelID
+	user := i.Member.User
 
-	_, _ = sess.ChannelEdit(ch.ID, &discordgo.ChannelEdit{
-		Name: fmt.Sprintf("closed-%s", ch.Name),
+	_ = sess.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+		Type: discordgo.InteractionResponseDeferredMessageUpdate,
 	})
 
-	_ = s.store.CloseTicket(ch.ID, "Đóng bởi "+i.Member.User.Username)
-	s.store.LogTicketAction(i.GuildID, ch.ID, "Đóng ticket", i.Member.User.ID, "", "")
+	msgs, _ := s.fetchAllChannelMessages(sess, chID)
+	_ = s.store.SaveTicketMessages(chID, msgs)
+
+	ownerID, found := s.store.FindTicketByChannel(chID)
+
+	closeReason := "Đóng bởi " + user.Username
+	_ = s.store.CloseTicketWithSchedule(chID, closeReason, 3)
+	s.store.LogTicketAction(i.GuildID, chID, "Đóng ticket", user.ID, "", fmt.Sprintf("Lưu %d tin nhắn, xóa sau 3 ngày", len(msgs)))
+
+	s.lock.Lock()
+	for uID, cID := range s.activeTickets {
+		if cID == chID {
+			delete(s.activeTickets, uID)
+		}
+	}
+	s.lock.Unlock()
+
+	if found && ownerID != "" {
+		_ = sess.ChannelPermissionSet(chID, ownerID, discordgo.PermissionOverwriteTypeMember,
+			0,
+			discordgo.PermissionViewChannel|discordgo.PermissionSendMessages|discordgo.PermissionReadMessageHistory|discordgo.PermissionAttachFiles|discordgo.PermissionEmbedLinks,
+		)
+	}
+
+	tCfg := s.store.GetTicketConfig(i.GuildID)
+
+	ch, err := sess.Channel(chID)
+	if err == nil && ch != nil {
+		for _, overwrite := range ch.PermissionOverwrites {
+			if overwrite.Type == discordgo.PermissionOverwriteTypeMember && overwrite.ID != sess.State.User.ID {
+				if overwrite.ID == ownerID || (tCfg != nil && overwrite.ID != tCfg.StaffRoleID) {
+					_ = sess.ChannelPermissionSet(chID, overwrite.ID, discordgo.PermissionOverwriteTypeMember,
+						0,
+						discordgo.PermissionViewChannel|discordgo.PermissionSendMessages|discordgo.PermissionReadMessageHistory|discordgo.PermissionAttachFiles|discordgo.PermissionEmbedLinks,
+					)
+				}
+			}
+		}
+
+		newName := ch.Name
+		if !strings.HasPrefix(newName, "dong-") && !strings.HasPrefix(newName, "closed-") {
+			newName = "dong-" + newName
+			if len(newName) > 32 {
+				newName = newName[:32]
+			}
+		}
+
+		editData := &discordgo.ChannelEdit{Name: newName}
+		if tCfg != nil && tCfg.ArchiveCategoryID != "" {
+			editData.ParentID = tCfg.ArchiveCategoryID
+		}
+		_, _ = sess.ChannelEdit(chID, editData)
+	}
 
 	closeEmbed := &discordgo.MessageEmbed{
-		Title:       "🔒 Ticket đã đóng",
-		Description: fmt.Sprintf("Ticket đã được đóng bởi <@%s>.", i.Member.User.ID),
-		Color:       0xe74c3c,
+		Title: "Ticket đã đóng",
+		Color: 0xe74c3c,
 	}
 
-	_ = sess.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-		Type: discordgo.InteractionResponseChannelMessageWithSource,
-		Data: &discordgo.InteractionResponseData{
-			Embeds: []*discordgo.MessageEmbed{closeEmbed},
-		},
-	})
+	_, _ = sess.ChannelMessageSendEmbed(chID, closeEmbed)
 }
 
-func (s *Service) handleClaimTicket(sess *discordgo.Session, i *discordgo.InteractionCreate) {
-	_ = sess.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-		Type: discordgo.InteractionResponseChannelMessageWithSource,
-		Data: &discordgo.InteractionResponseData{
-			Content: fmt.Sprintf("🟡 Ticket này đã được nhận xử lý bởi <@%s>.", i.Member.User.ID),
-		},
-	})
-}
+func (s *Service) StartAutoDeleteWorker(sess *discordgo.Session) {
+	go s.cleanupExpiredTickets(sess)
 
-func (s *Service) handleDeleteTicket(sess *discordgo.Session, i *discordgo.InteractionCreate) {
-	_ = sess.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-		Type: discordgo.InteractionResponseChannelMessageWithSource,
-		Data: &discordgo.InteractionResponseData{
-			Content: "🗑️ Kênh ticket sẽ được xóa sau 3 giây...",
-		},
-	})
-
+	ticker := time.NewTicker(15 * time.Minute)
 	go func() {
-		time.Sleep(3 * time.Second)
-		_, _ = sess.ChannelDelete(i.ChannelID)
+		for range ticker.C {
+			s.cleanupExpiredTickets(sess)
+		}
 	}()
 }
 
-func (s *Service) handlePromptRename(sess *discordgo.Session, i *discordgo.InteractionCreate) {
-	_ = sess.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-		Type: discordgo.InteractionResponseModal,
-		Data: &discordgo.InteractionResponseData{
-			CustomID: ModalRename,
-			Title:    "Đổi tên ticket",
-			Components: []discordgo.MessageComponent{
-				discordgo.ActionsRow{
-					Components: []discordgo.MessageComponent{
-						discordgo.TextInput{
-							CustomID:  "new_name",
-							Label:     "Tên mới",
-							Style:     discordgo.TextInputShort,
-							Required:  true,
-							MaxLength: 80,
-						},
-					},
-				},
-			},
-		},
-	})
-}
-
-func (s *Service) handleSubmitRename(sess *discordgo.Session, i *discordgo.InteractionCreate) {
-	data := i.ModalSubmitData()
-	newName := data.Components[0].(*discordgo.ActionsRow).Components[0].(*discordgo.TextInput).Value
-
-	_, _ = sess.ChannelEdit(i.ChannelID, &discordgo.ChannelEdit{Name: newName})
-
-	_ = sess.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-		Type: discordgo.InteractionResponseChannelMessageWithSource,
-		Data: &discordgo.InteractionResponseData{
-			Content: fmt.Sprintf("✅ Đã đổi tên kênh thành: `%s`", newName),
-		},
-	})
-}
-
-func (s *Service) handlePromptAddUser(sess *discordgo.Session, i *discordgo.InteractionCreate) {
-	_ = sess.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-		Type: discordgo.InteractionResponseModal,
-		Data: &discordgo.InteractionResponseData{
-			CustomID: ModalAddUser,
-			Title:    "Thêm người vào ticket",
-			Components: []discordgo.MessageComponent{
-				discordgo.ActionsRow{
-					Components: []discordgo.MessageComponent{
-						discordgo.TextInput{
-							CustomID:    "user_id",
-							Label:       "ID người dùng",
-							Placeholder: "Ví dụ: 123456789012345678",
-							Style:       discordgo.TextInputShort,
-							Required:    true,
-						},
-					},
-				},
-			},
-		},
-	})
-}
-
-func (s *Service) handleSubmitAddUser(sess *discordgo.Session, i *discordgo.InteractionCreate) {
-	data := i.ModalSubmitData()
-	targetID := data.Components[0].(*discordgo.ActionsRow).Components[0].(*discordgo.TextInput).Value
-
-	err := sess.ChannelPermissionSet(i.ChannelID, targetID, discordgo.PermissionOverwriteTypeMember, discordgo.PermissionViewChannel|discordgo.PermissionSendMessages|discordgo.PermissionReadMessageHistory, 0)
-	msg := fmt.Sprintf("✅ Đã thêm <@%s> vào ticket.", targetID)
-	if err != nil {
-		msg = fmt.Sprintf("❌ Không thể thêm người dùng: %v", err)
-	}
-
-	_ = sess.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-		Type: discordgo.InteractionResponseChannelMessageWithSource,
-		Data: &discordgo.InteractionResponseData{Content: msg},
-	})
-}
-
-func (s *Service) handlePromptRemoveUser(sess *discordgo.Session, i *discordgo.InteractionCreate) {
-	_ = sess.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-		Type: discordgo.InteractionResponseModal,
-		Data: &discordgo.InteractionResponseData{
-			CustomID: ModalRemoveUser,
-			Title:    "Xóa người khỏi ticket",
-			Components: []discordgo.MessageComponent{
-				discordgo.ActionsRow{
-					Components: []discordgo.MessageComponent{
-						discordgo.TextInput{
-							CustomID:    "user_id",
-							Label:       "ID người dùng",
-							Placeholder: "Ví dụ: 123456789012345678",
-							Style:       discordgo.TextInputShort,
-							Required:    true,
-						},
-					},
-				},
-			},
-		},
-	})
-}
-
-func (s *Service) handleSubmitRemoveUser(sess *discordgo.Session, i *discordgo.InteractionCreate) {
-	data := i.ModalSubmitData()
-	targetID := data.Components[0].(*discordgo.ActionsRow).Components[0].(*discordgo.TextInput).Value
-
-	err := sess.ChannelPermissionDelete(i.ChannelID, targetID)
-	msg := fmt.Sprintf("✅ Đã xóa <@%s> khỏi ticket.", targetID)
-	if err != nil {
-		msg = fmt.Sprintf("❌ Không thể xóa người dùng: %v", err)
-	}
-
-	_ = sess.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-		Type: discordgo.InteractionResponseChannelMessageWithSource,
-		Data: &discordgo.InteractionResponseData{Content: msg},
-	})
-}
-
-func (s *Service) handleTranscript(sess *discordgo.Session, i *discordgo.InteractionCreate) {
-	_ = sess.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-		Type: discordgo.InteractionResponseDeferredChannelMessageWithSource,
-		Data: &discordgo.InteractionResponseData{Flags: discordgo.MessageFlagsEphemeral},
-	})
-
-	messages, err := sess.ChannelMessages(i.ChannelID, 100, "", "", "")
-	if err != nil {
-		_, _ = sess.FollowupMessageCreate(i.Interaction, true, &discordgo.WebhookParams{Content: "Lỗi tải tin nhắn."})
+func (s *Service) cleanupExpiredTickets(sess *discordgo.Session) {
+	expired, err := s.store.GetExpiredTickets()
+	if err != nil || len(expired) == 0 {
 		return
 	}
 
-	transcriptPath := filepath.Join(os.TempDir(), fmt.Sprintf("transcript_%s.html", i.ChannelID))
-	f, err := os.Create(transcriptPath)
-	if err != nil {
-		return
-	}
-	defer os.Remove(transcriptPath)
-
-	fmt.Fprintf(f, "<!DOCTYPE html><html><head><meta charset='utf-8'><title>Transcript Ticket</title></head><body style='background:#2f3136;color:#fff;font-family:sans-serif;'><h2>Transcript Ticket</h2><hr>")
-	for idx := len(messages) - 1; idx >= 0; idx-- {
-		m := messages[idx]
-		author := "Unknown"
-		if m.Author != nil {
-			author = m.Author.Username
+	for _, rec := range expired {
+		_, delErr := sess.ChannelDelete(rec.ChannelID)
+		if delErr != nil {
+			log.Printf("Xóa kênh ticket hết hạn %s: %v", rec.ChannelID, delErr)
 		}
-		fmt.Fprintf(f, "<div style='margin-bottom:10px;'><b>%s</b> <small style='color:#bbb;'>%s</small><br>%s</div>", author, m.Timestamp.Format("2006-01-02 15:04:05"), m.Content)
-	}
-	fmt.Fprintf(f, "</body></html>")
-	f.Close()
 
-	rf, err := os.Open(transcriptPath)
-	if err != nil {
-		return
-	}
-	defer rf.Close()
+		_ = s.store.MarkTicketDeleted(rec.ChannelID)
+		s.store.LogTicketAction(rec.GuildID, rec.ChannelID, "Tự động xóa kênh", "SYSTEM", "", "Hết hạn lưu trữ 3 ngày")
 
-	_, _ = sess.FollowupMessageCreate(i.Interaction, true, &discordgo.WebhookParams{
-		Content: "📄 File Transcript của ticket:",
-		Files: []*discordgo.File{
-			{
-				Name:   fmt.Sprintf("transcript_%s.html", i.ChannelID),
-				Reader: rf,
-			},
-		},
-	})
+		s.lock.Lock()
+		for uID, cID := range s.activeTickets {
+			if cID == rec.ChannelID {
+				delete(s.activeTickets, uID)
+			}
+		}
+		s.lock.Unlock()
+	}
 }

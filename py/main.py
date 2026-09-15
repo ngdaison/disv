@@ -65,7 +65,8 @@ class BotClient(commands.Bot):
             'cogs.utility',
             'cogs.dashboard',
             'cogs.ticket',
-            'cogs.autoroles'
+            'cogs.autoroles',
+            'cogs.noitu'
         ]:
             try:
                 await self.load_extension(extension)

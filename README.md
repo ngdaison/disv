@@ -51,6 +51,19 @@
 ### 7. 📊 Dashboard Cấu Hình Kênh Trực Quan
 - Lệnh `/setting` mở giao diện tương tác (Buttons/Select) cho phép Admin bật/tắt từng tính năng độc lập cho từng kênh (TikTok, Chat AI, Leveling,...).
 
+### 8. 🎮 Nối Từ Tiếng Việt (Word Chain) với `dictionary.db` & Menu Tương Tác
+- Sử dụng cơ sở dữ liệu từ điển chuẩn `dictionary.db` với hơn **377.000 từ tiếng Việt** và định nghĩa phong phú.
+- **Tối ưu hóa tối đa số lượng lệnh**: Toàn bộ thao tác tích hợp vào **Bảng Điều Khiển Tương Tác (Interactive Panel)** qua lệnh `/noitu`:
+  - 📌 Bật/tắt kênh hiện tại làm Kênh Nối Từ tự động.
+  - 🔄 Khởi động lại ván mới (Bot tự bốc từ mở màn).
+  - 🏆 Bảng Xếp Hạng Top 10 cao thủ nối từ theo Server.
+  - 📊 Thống kê hồ sơ cá nhân (điểm, số từ đúng, kỷ lục chuỗi, tỷ lệ chính xác).
+  - 📖 Tra cứu định nghĩa từ điển qua Modal trực quan.
+  - 💡 Gợi ý từ nối tiếp khi bí từ.
+  - ⚙️ Tùy chọn chế độ chơi Luân phiên hoặc Solo.
+  - 📜 Hướng dẫn luật chơi và điểm thưởng.
+- **Tự động nhận diện trong Kênh Nối Từ**: Thành viên chỉ cần chat từ 2 tiếng vào kênh, Bot tự động kiểm tra âm tiết, từ điển, chống spam, reaction ✅/❌, cộng điểm và vinh danh khi gặp từ cụt hiểm hóc!
+
 ---
 
 ## 📂 Cấu Trúc Thư Mục Dự Án
@@ -74,7 +87,8 @@ botdis/
 │   │   │   ├── moderation/        # Lệnh xử phạt & Anti-spam
 │   │   │   ├── ticket/            # Hệ thống Ticket hỗ trợ khách hàng
 │   │   │   ├── tiktok/            # Tải & nén video TikTok bằng FFmpeg
-│   │   │   └── utility/           # Lệnh tiện ích /ping, /botinfo
+│   │   │   ├── utility/           # Lệnh tiện ích /ping, /botinfo
+│   │   │   └── wordchain/         # Game Nối Từ tiếng Việt & SQLite dictionary.db
 │   │   └── storage/
 │   │       └── mysql.go           # Kết nối & Auto-migration cơ sở dữ liệu MySQL
 │   ├── go.mod                     # Quản lý Go dependencies
@@ -84,6 +98,7 @@ botdis/
 │   ├── utils/                     # Tiện ích bổ trợ (Database, Anti-spam)
 │   ├── main.py                    # File khởi chạy bản Python
 │   └── requirements.txt           # Thư viện Python
+├── dictionary.db                  # CSDL từ điển tiếng Việt SQLite (>377.000 từ)
 ├── videotiktok/                   # Thư mục tạm thời xử lý video/ảnh
 ├── config.example.json            # File mẫu cấu hình an toàn
 ├── train.txt                      # Dữ liệu ngữ cảnh đào tạo cho Chat AI
@@ -184,18 +199,15 @@ python main.py
 
 | Lệnh | Mô tả | Quyền hạn |
 | :--- | :--- | :--- |
-| `/ticket send [channel]` | Gửi bảng điều khiển tạo Ticket vào kênh được chọn | Quản trị viên |
-| `/setting` | Mở bảng điều khiển cài đặt tính năng cho kênh/server | Quản trị viên |
-| `/autorole set <role>` | Thiết lập vai trò tự động trao cho người mới | Quản trị viên |
-| `/autorole show` | Xem cấu hình vai trò tự động hiện tại | Mọi người |
-| `/rank [user]` | Kiểm tra cấp độ và thanh điểm kinh nghiệm (XP) | Mọi người |
+| `/setting` | Bảng điều khiển trung tâm (Cài đặt, Gửi ticket, AutoRole, BotInfo, Ping) | Quản trị viên |
+| `/noitu` | Bảng điều khiển nối từ tương tác | Mọi người |
+| `/tratu <tu>` | Tra cứu định nghĩa từ trong từ điển tiếng Việt | Mọi người |
+| `/rank [user]` | Kiểm tra cấp độ và điểm kinh nghiệm | Mọi người |
 | `/clear [amount]` | Xóa nhanh số lượng tin nhắn trong kênh (tối đa 100) | Quản lý tin nhắn |
-| `/mute <user> [minutes] [reason]` | Khóa mõm (Timeout) thành viên | Quản lý thành viên |
+| `/mute <user> [minutes] [reason]` | Khóa chat (Timeout) thành viên | Quản lý thành viên |
 | `/unmute <user>` | Hủy Timeout cho thành viên | Quản lý thành viên |
 | `/kick <user> [reason]` | Đuổi thành viên ra khỏi máy chủ | Đuổi thành viên |
 | `/ban <user> [reason]` | Cấm thành viên vĩnh viễn khỏi máy chủ | Cấm thành viên |
-| `/ping` | Đo độ trễ phản hồi của Bot đến Discord Gateway | Mọi người |
-| `/botinfo` | Xem thông tin hệ thống (RAM, Go Runtime, Uptime) | Mọi người |
 
 ---
 

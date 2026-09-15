@@ -21,7 +21,7 @@ func (as *AntiSpam) handleClear(sess *discordgo.Session, i *discordgo.Interactio
 	if !as.isUserAdmin(sess, i.GuildID, i.Member.User.ID) {
 		_ = sess.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 			Type: discordgo.InteractionResponseChannelMessageWithSource,
-			Data: &discordgo.InteractionResponseData{Content: "❌ Bạn không có quyền dùng lệnh này.", Flags: discordgo.MessageFlagsEphemeral},
+			Data: &discordgo.InteractionResponseData{Content: "Bạn không có quyền dùng lệnh này", Flags: discordgo.MessageFlagsEphemeral},
 		})
 		return
 	}
@@ -42,7 +42,7 @@ func (as *AntiSpam) handleClear(sess *discordgo.Session, i *discordgo.Interactio
 	if err != nil {
 		_ = sess.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 			Type: discordgo.InteractionResponseChannelMessageWithSource,
-			Data: &discordgo.InteractionResponseData{Content: "❌ Lỗi khi lấy tin nhắn.", Flags: discordgo.MessageFlagsEphemeral},
+			Data: &discordgo.InteractionResponseData{Content: "Lỗi khi lấy tin nhắn", Flags: discordgo.MessageFlagsEphemeral},
 		})
 		return
 	}
@@ -57,7 +57,7 @@ func (as *AntiSpam) handleClear(sess *discordgo.Session, i *discordgo.Interactio
 	_ = sess.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 		Type: discordgo.InteractionResponseChannelMessageWithSource,
 		Data: &discordgo.InteractionResponseData{
-			Content: fmt.Sprintf("🧹 Đã xóa `%d` tin nhắn!", len(msgIDs)),
+			Content: fmt.Sprintf("Đã xóa `%d` tin nhắn", len(msgIDs)),
 			Flags:   discordgo.MessageFlagsEphemeral,
 		},
 	})
@@ -67,7 +67,7 @@ func (as *AntiSpam) handleKick(sess *discordgo.Session, i *discordgo.Interaction
 	if !as.isUserAdmin(sess, i.GuildID, i.Member.User.ID) {
 		_ = sess.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 			Type: discordgo.InteractionResponseChannelMessageWithSource,
-			Data: &discordgo.InteractionResponseData{Content: "❌ Bạn không có quyền Kick.", Flags: discordgo.MessageFlagsEphemeral},
+			Data: &discordgo.InteractionResponseData{Content: "Bạn không có quyền kick", Flags: discordgo.MessageFlagsEphemeral},
 		})
 		return
 	}
@@ -80,9 +80,9 @@ func (as *AntiSpam) handleKick(sess *discordgo.Session, i *discordgo.Interaction
 	}
 
 	err := sess.GuildMemberDeleteWithReason(i.GuildID, targetUser.ID, reason)
-	msg := fmt.Sprintf("👢 Đã Kick <@%s>. Lý do: %s", targetUser.ID, reason)
+	msg := fmt.Sprintf("Đã kick <@%s> Lý do %s", targetUser.ID, reason)
 	if err != nil {
-		msg = fmt.Sprintf("❌ Không thể Kick thành viên: %v", err)
+		msg = fmt.Sprintf("Không thể kick thành viên %v", err)
 	}
 
 	_ = sess.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
@@ -95,7 +95,7 @@ func (as *AntiSpam) handleBan(sess *discordgo.Session, i *discordgo.InteractionC
 	if !as.isUserAdmin(sess, i.GuildID, i.Member.User.ID) {
 		_ = sess.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 			Type: discordgo.InteractionResponseChannelMessageWithSource,
-			Data: &discordgo.InteractionResponseData{Content: "❌ Bạn không có quyền Ban.", Flags: discordgo.MessageFlagsEphemeral},
+			Data: &discordgo.InteractionResponseData{Content: "Bạn không có quyền ban", Flags: discordgo.MessageFlagsEphemeral},
 		})
 		return
 	}
@@ -108,9 +108,9 @@ func (as *AntiSpam) handleBan(sess *discordgo.Session, i *discordgo.InteractionC
 	}
 
 	err := sess.GuildBanCreateWithReason(i.GuildID, targetUser.ID, reason, 0)
-	msg := fmt.Sprintf("🔨 Đã Ban <@%s>. Lý do: %s", targetUser.ID, reason)
+	msg := fmt.Sprintf("Đã ban <@%s> Lý do %s", targetUser.ID, reason)
 	if err != nil {
-		msg = fmt.Sprintf("❌ Không thể Ban thành viên: %v", err)
+		msg = fmt.Sprintf("Không thể ban thành viên %v", err)
 	}
 
 	_ = sess.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
@@ -123,7 +123,7 @@ func (as *AntiSpam) handleMute(sess *discordgo.Session, i *discordgo.Interaction
 	if !as.isUserAdmin(sess, i.GuildID, i.Member.User.ID) {
 		_ = sess.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 			Type: discordgo.InteractionResponseChannelMessageWithSource,
-			Data: &discordgo.InteractionResponseData{Content: "❌ Bạn không có quyền Mute.", Flags: discordgo.MessageFlagsEphemeral},
+			Data: &discordgo.InteractionResponseData{Content: "Bạn không có quyền mute", Flags: discordgo.MessageFlagsEphemeral},
 		})
 		return
 	}
@@ -141,9 +141,9 @@ func (as *AntiSpam) handleMute(sess *discordgo.Session, i *discordgo.Interaction
 
 	until := time.Now().Add(time.Duration(minutes) * time.Minute)
 	err := sess.GuildMemberTimeout(i.GuildID, targetUser.ID, &until)
-	msg := fmt.Sprintf("🔇 Đã Mute (Timeout) <@%s> trong `%d phút`. Lý do: %s", targetUser.ID, minutes, reason)
+	msg := fmt.Sprintf("Đã mute <@%s> trong `%d phút` Lý do %s", targetUser.ID, minutes, reason)
 	if err != nil {
-		msg = fmt.Sprintf("❌ Không thể Mute thành viên: %v", err)
+		msg = fmt.Sprintf("Không thể mute thành viên %v", err)
 	}
 
 	_ = sess.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
@@ -156,7 +156,7 @@ func (as *AntiSpam) handleUnmute(sess *discordgo.Session, i *discordgo.Interacti
 	if !as.isUserAdmin(sess, i.GuildID, i.Member.User.ID) {
 		_ = sess.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 			Type: discordgo.InteractionResponseChannelMessageWithSource,
-			Data: &discordgo.InteractionResponseData{Content: "❌ Bạn không có quyền Unmute.", Flags: discordgo.MessageFlagsEphemeral},
+			Data: &discordgo.InteractionResponseData{Content: "Bạn không có quyền unmute", Flags: discordgo.MessageFlagsEphemeral},
 		})
 		return
 	}
@@ -165,9 +165,9 @@ func (as *AntiSpam) handleUnmute(sess *discordgo.Session, i *discordgo.Interacti
 	targetUser := options[0].UserValue(sess)
 
 	err := sess.GuildMemberTimeout(i.GuildID, targetUser.ID, nil)
-	msg := fmt.Sprintf("🔊 Đã bỏ Mute (Timeout) cho <@%s>.", targetUser.ID)
+	msg := fmt.Sprintf("Đã bỏ mute cho <@%s>", targetUser.ID)
 	if err != nil {
-		msg = fmt.Sprintf("❌ Không thể bỏ Mute: %v", err)
+		msg = fmt.Sprintf("Không thể bỏ mute %v", err)
 	}
 
 	_ = sess.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{

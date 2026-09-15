@@ -91,6 +91,11 @@ func (as *AntiSpam) HandleMessage(sess *discordgo.Session, m *discordgo.MessageC
 		return true
 	}
 
+	if settings.ACText && !hasLink(m.Content) && len(m.Attachments) == 0 && len(m.StickerItems) == 0 {
+		_ = sess.ChannelMessageDelete(m.ChannelID, m.ID)
+		return true
+	}
+
 	userKey := m.GuildID + "_" + m.Author.ID
 	now := time.Now()
 

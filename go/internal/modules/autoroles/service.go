@@ -2,6 +2,7 @@ package autoroles
 
 import (
 	"fmt"
+	"time"
 
 	"botdis/internal/discord"
 	"botdis/internal/storage"
@@ -18,13 +19,20 @@ func NewService(store *storage.MySQLStore) *Service {
 }
 
 func (s *Service) RegisterRoutes(r *discord.Router) {
-	r.RegisterCommand("autorole", s.handleAutoRoleCommand)
 }
 
 func (s *Service) HandleGuildMemberAdd(sess *discordgo.Session, m *discordgo.GuildMemberAdd) {
 	gData := s.store.GetGuildData(m.GuildID)
 	roleID, exists := gData.AutoJoinRoles["default"]
 	if !exists || roleID == "" {
+		return
+	}
+
+	if gData.AutoJoinDelay > 0 {
+		go func(gid, uid, rid string, delaySec int) {
+			time.Sleep(time.Duration(delaySec) * time.Second)
+			_ = sess.GuildMemberRoleAdd(gid, uid, rid)
+		}(m.GuildID, m.User.ID, roleID, gData.AutoJoinDelay)
 		return
 	}
 
@@ -46,7 +54,7 @@ func (s *Service) handleAutoRoleCommand(sess *discordgo.Session, i *discordgo.In
 		_ = sess.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 			Type: discordgo.InteractionResponseChannelMessageWithSource,
 			Data: &discordgo.InteractionResponseData{
-				Content: fmt.Sprintf("✅ Đã thiết lập AutoRole: <@&%s>", role.ID),
+				Content: fmt.Sprintf("Đã thiết lập autorole <@&%s>", role.ID),
 				Flags:   discordgo.MessageFlagsEphemeral,
 			},
 		})
@@ -54,9 +62,9 @@ func (s *Service) handleAutoRoleCommand(sess *discordgo.Session, i *discordgo.In
 	case "show":
 		gData := s.store.GetGuildData(i.GuildID)
 		roleID := gData.AutoJoinRoles["default"]
-		msg := "Chưa thiết lập AutoRole."
+		msg := "Chưa thiết lập autorole"
 		if roleID != "" {
-			msg = fmt.Sprintf("AutoRole hiện tại: <@&%s>", roleID)
+			msg = fmt.Sprintf("Autorole hiện tại <@&%s>", roleID)
 		}
 		_ = sess.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 			Type: discordgo.InteractionResponseChannelMessageWithSource,

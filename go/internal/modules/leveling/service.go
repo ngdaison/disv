@@ -51,15 +51,15 @@ func (s *Service) HandleMessage(sess *discordgo.Session, m *discordgo.MessageCre
 	s.lock.Unlock()
 
 	xpGained := rand.Intn(11) + 15
-	newXP, newLevel, leveledUp, err := s.store.AddUserXP(m.GuildID, m.Author.ID, xpGained)
+	_, newLevel, leveledUp, err := s.store.AddUserXP(m.GuildID, m.Author.ID, xpGained)
 	if err != nil {
 		return
 	}
 
 	if leveledUp {
 		embed := &discordgo.MessageEmbed{
-			Title:       "🎉 Chúc Mừng Thăng Cấp!",
-			Description: fmt.Sprintf("Chúc mừng <@%s> đã đạt **Cấp độ %d**! (Hiện tại: %d XP)", m.Author.ID, newLevel, newXP),
+			Title:       "Chúc mừng thăng cấp",
+			Description: fmt.Sprintf("Chúc mừng <@%s> đã đạt **Cấp độ %d**", m.Author.ID, newLevel),
 			Color:       0xf1c40f,
 		}
 		_, _ = sess.ChannelMessageSendEmbed(m.ChannelID, embed)
@@ -78,7 +78,7 @@ func (s *Service) handleRankCommand(sess *discordgo.Session, i *discordgo.Intera
 		_ = sess.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 			Type: discordgo.InteractionResponseChannelMessageWithSource,
 			Data: &discordgo.InteractionResponseData{
-				Content: "Không thể lấy dữ liệu cấp độ.",
+				Content: "Không thể lấy dữ liệu cấp độ",
 				Flags:   discordgo.MessageFlagsEphemeral,
 			},
 		})
@@ -87,14 +87,14 @@ func (s *Service) handleRankCommand(sess *discordgo.Session, i *discordgo.Intera
 
 	xpNeeded := ul.Level * 100
 	embed := &discordgo.MessageEmbed{
-		Title: fmt.Sprintf("📊 Thẻ Cấp Độ - %s", targetUser.Username),
+		Title: fmt.Sprintf("Thẻ cấp độ - %s", targetUser.Username),
 		Color: 0x3498db,
 		Thumbnail: &discordgo.MessageEmbedThumbnail{
 			URL: targetUser.AvatarURL("256"),
 		},
 		Fields: []*discordgo.MessageEmbedField{
-			{Name: "⭐ Cấp Độ", Value: fmt.Sprintf("**%d**", ul.Level), Inline: true},
-			{Name: "✨ Điểm Kinh Nghiệm (XP)", Value: fmt.Sprintf("**%d / %d**", ul.XP, xpNeeded), Inline: true},
+			{Name: "Cấp độ", Value: fmt.Sprintf("**%d**", ul.Level), Inline: true},
+			{Name: "Điểm kinh nghiệm", Value: fmt.Sprintf("**%d / %d**", ul.XP, xpNeeded), Inline: true},
 		},
 	}
 

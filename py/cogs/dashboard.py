@@ -36,8 +36,8 @@ class Dashboard(commands.Cog):
         try:
             await ctx.defer(ephemeral=True)
             
-            embed = discord.Embed(title="⚙️ Bảng Điều Khiển Bot", description="Bấm vào nút để Bật (Xanh) hoặc Tắt (Đỏ).", color=discord.Color.blue())
-            embed.add_field(name="🚫 Chống Spam & Nội Dung", value=(
+            embed = discord.Embed(title="Bảng điều khiển bot", description="Bấm vào nút để bật hoặc tắt.", color=discord.Color.blue())
+            embed.add_field(name="Chống spam", value=(
                 "**Chặn Link**: Xoá tin nhắn chứa link.\n"
                 "**Chặn Media**: Xoá Ảnh và Video.\n"
                 "**Chặn File**: Xoá các file khác.\n"
@@ -45,7 +45,7 @@ class Dashboard(commands.Cog):
                 "**Anti Fast**: Xoá toàn bộ tin nhắn khi gửi quá nhanh qua các kênh.\n"
                 "**Anti Dup**: Xoá toàn bộ tin nhắn khi gửi trùng lặp qua các kênh."
             ), inline=False)
-            embed.add_field(name="⭐ Tiện Ích", value=(
+            embed.add_field(name="Tiện ích", value=(
                 "**TikTok**: Tự động tải video không logo.\n"
                 "**Leveling**: Hệ thống XP và Role.\n"
                 "**Sticky**: Ghim tin nhắn dưới cùng đoạn chat."

@@ -12,18 +12,20 @@ import (
 	"botdis/internal/modules/autoroles"
 	"botdis/internal/modules/chatai"
 	"botdis/internal/modules/dashboard"
+	"botdis/internal/modules/feed"
 	"botdis/internal/modules/leveling"
 	"botdis/internal/modules/moderation"
 	"botdis/internal/modules/ticket"
 	"botdis/internal/modules/tiktok"
 	"botdis/internal/modules/utility"
+	"botdis/internal/modules/wordchain"
 	"botdis/internal/storage"
 
 	"github.com/bwmarrin/discordgo"
 )
 
 func main() {
-	log.Println("🚀 Đang khởi động Bot Discord bằng Golang...")
+	log.Println("Đang khởi động Bot Discord bằng Golang...")
 
 	cfg, err := config.LoadConfig()
 	if err != nil {
@@ -38,19 +40,30 @@ func main() {
 
 	router := discord.NewRouter()
 	tiktokService := tiktok.NewService(store)
-	ticketService := ticket.NewService(store)
 	antiSpam := moderation.NewAntiSpam(store)
 	levelingService := leveling.NewService(store)
 	utilityService := utility.NewService()
 	autorolesService := autoroles.NewService(store)
 	dashboardService := dashboard.NewService(store)
 	chataiService := chatai.NewService(cfg.AIAPIKey, store)
+	ticketService := ticket.NewService(store, chataiService)
+	feedService := feed.NewService(store)
+	defer feedService.Stop()
+
+	dict, err := wordchain.NewDictionary("dictionary.db")
+	if err != nil {
+		log.Printf("Cảnh báo: Không thể nạp từ điển dictionary.db: %v", err)
+	} else {
+		defer dict.Close()
+	}
+	wordchainService := wordchain.NewService(store, dict)
 
 	ticketService.RegisterRoutes(router)
 	levelingService.RegisterRoutes(router)
 	utilityService.RegisterRoutes(router)
 	autorolesService.RegisterRoutes(router)
 	dashboardService.RegisterRoutes(router)
+	wordchainService.RegisterRoutes(router)
 	antiSpam.RegisterCommands(router)
 
 	sess, err := discordgo.New("Bot " + cfg.BotToken)
@@ -64,76 +77,41 @@ func main() {
 		discordgo.IntentsMessageContent
 
 	sess.AddHandler(func(s *discordgo.Session, r *discordgo.Ready) {
-		log.Printf("✅ Đã đăng nhập với tư cách: %s#%s (ID: %s)", r.User.Username, r.User.Discriminator, r.User.ID)
+		log.Printf("Đã đăng nhập với tư cách: %s#%s (ID: %s)", r.User.Username, r.User.Discriminator, r.User.ID)
 		if cfg.StatusMessage != "" {
 			_ = s.UpdateGameStatus(0, cfg.StatusMessage)
 		}
 
 		commands := []*discordgo.ApplicationCommand{
 			{
-				Name:        "ticket",
-				Description: "Hệ thống Ticket Hỗ Trợ",
+				Name:        "setting",
+				Description: "Bảng điều khiển cài đặt",
+			},
+			{
+				Name:        "noitu",
+				Description: "Bảng điều khiển nối từ",
+			},
+			{
+				Name:        "tratu",
+				Description: "Tra cứu từ điển tiếng Việt",
 				Options: []*discordgo.ApplicationCommandOption{
 					{
-						Type:        discordgo.ApplicationCommandOptionSubCommand,
-						Name:        "send",
-						Description: "Gửi bảng Hỗ Trợ mẫu vào kênh chỉ định",
-						Options: []*discordgo.ApplicationCommandOption{
-							{
-								Type:        discordgo.ApplicationCommandOptionChannel,
-								Name:        "channel",
-								Description: "Kênh muốn gửi bảng Hỗ Trợ (mặc định là kênh hiện tại)",
-								Required:    false,
-							},
-						},
+						Type:        discordgo.ApplicationCommandOptionString,
+						Name:        "tu",
+						Description: "Từ muốn tra cứu",
+						Required:    true,
 					},
 				},
 			},
 			{
-				Name:        "setting",
-				Description: "Bảng điều khiển cài đặt Bot cho kênh hiện tại",
-			},
-			{
-				Name:        "ping",
-				Description: "Kiểm tra độ trễ của bot",
-			},
-			{
-				Name:        "botinfo",
-				Description: "Xem thông tin hệ thống, RAM và phiên bản Go",
-			},
-			{
 				Name:        "rank",
-				Description: "Xem cấp độ và điểm kinh nghiệm XP",
+				Description: "Xem cấp độ và điểm kinh nghiệm",
 				Options: []*discordgo.ApplicationCommandOption{
 					{
 						Type:        discordgo.ApplicationCommandOptionUser,
 						Name:        "user",
 						Description: "Người dùng cần xem (mặc định là bản thân)",
 						Required:    false,
-					},
-				},
-			},
-			{
-				Name:        "autorole",
-				Description: "Cấu hình role tự động gán cho thành viên mới",
-				Options: []*discordgo.ApplicationCommandOption{
-					{
-						Type:        discordgo.ApplicationCommandOptionSubCommand,
-						Name:        "set",
-						Description: "Chọn role tự động gán",
-						Options: []*discordgo.ApplicationCommandOption{
-							{
-								Type:        discordgo.ApplicationCommandOptionRole,
-								Name:        "role",
-								Description: "Role cần gán",
-								Required:    true,
-							},
-						},
-					},
-					{
-						Type:        discordgo.ApplicationCommandOptionSubCommand,
-						Name:        "show",
-						Description: "Xem role tự động hiện tại",
 					},
 				},
 			},
@@ -223,13 +201,11 @@ func main() {
 			},
 		}
 
-		for _, cmd := range commands {
-			_, err := s.ApplicationCommandCreate(s.State.User.ID, "", cmd)
-			if err != nil {
-				log.Printf("Lỗi đăng ký command /%s: %v", cmd.Name, err)
-			} else {
-				log.Printf("Đã đồng bộ command: /%s", cmd.Name)
-			}
+		_, err := s.ApplicationCommandBulkOverwrite(s.State.User.ID, "", commands)
+		if err != nil {
+			log.Printf("Lỗi đồng bộ slash commands: %v", err)
+		} else {
+			log.Printf("Đã đồng bộ thành công %d commands!", len(commands))
 		}
 	})
 
@@ -239,6 +215,10 @@ func main() {
 
 	sess.AddHandler(func(s *discordgo.Session, m *discordgo.GuildMemberAdd) {
 		autorolesService.HandleGuildMemberAdd(s, m)
+	})
+
+	sess.AddHandler(func(s *discordgo.Session, ch *discordgo.ChannelDelete) {
+		ticketService.HandleChannelDelete(s, ch)
 	})
 
 	sess.AddHandler(func(s *discordgo.Session, m *discordgo.MessageCreate) {
@@ -256,6 +236,8 @@ func main() {
 		tiktokService.HandleMessage(s, m)
 
 		chataiService.HandleMessage(s, m)
+
+		wordchainService.HandleMessage(s, m)
 	})
 
 	err = sess.Open()
@@ -264,7 +246,10 @@ func main() {
 	}
 	defer sess.Close()
 
-	log.Println("⚡ Bot Go đang hoạt động! Nhấn Ctrl+C để dừng.")
+	ticketService.StartAutoDeleteWorker(sess)
+	feedService.Start(sess)
+
+	log.Println("Bot Go đang hoạt động! Nhấn Ctrl+C để dừng.")
 
 	sc := make(chan os.Signal, 1)
 	signal.Notify(sc, syscall.SIGINT, syscall.SIGTERM, os.Interrupt)

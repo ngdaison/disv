@@ -75,7 +75,7 @@ def build_ticket_embed(guild: Optional[discord.Guild] = None) -> discord.Embed:
 
 def build_ticket_welcome_embed(member: discord.Member, ticket_number: int) -> discord.Embed:
     embed = discord.Embed(
-        title=f'📩 Phiếu Hỗ Trợ #{ticket_number:04d}',
+        title=f'Phiếu hỗ trợ #{ticket_number:04d}',
         description=(
             f'Xin chào {member.mention}!\n'
             'Vui lòng trình bày chi tiết vấn đề của bạn (kèm ảnh hoặc mã giao dịch nếu có).\n'
@@ -84,8 +84,8 @@ def build_ticket_welcome_embed(member: discord.Member, ticket_number: int) -> di
         color=discord.Color.from_rgb(46, 204, 113),
         timestamp=datetime.datetime.utcnow(),
     )
-    embed.add_field(name='👤 Người tạo', value=member.mention, inline=True)
-    embed.add_field(name='📌 Trạng thái', value='Đang chờ hỗ trợ', inline=True)
+    embed.add_field(name='Người tạo', value=member.mention, inline=True)
+    embed.add_field(name='Trạng thái', value='Đang chờ hỗ trợ', inline=True)
     embed.set_footer(text='Vui lòng đợi đội ngũ hỗ trợ phản hồi')
     return embed
 
@@ -98,7 +98,7 @@ def build_status_embed(title: str, description: str, colour: discord.Color) -> d
 
 def build_log_embed(guild: discord.Guild, action: str, author: discord.Member, ticket_channel: discord.TextChannel, reason: Optional[str] = None, target: Optional[discord.abc.Snowflake] = None) -> discord.Embed:
     embed = discord.Embed(
-        title='📌 Ticket Log',
+        title='Ticket log',
         description=action,
         color=discord.Color.greyple(),
         timestamp=datetime.datetime.utcnow(),
@@ -119,7 +119,7 @@ class TicketPanelView(discord.ui.View):
         super().__init__(timeout=None)
         self.cog = cog
 
-    @discord.ui.button(label='Hỗ Trợ', style=discord.ButtonStyle.danger, emoji='📩', custom_id=TICKET_CREATE_ID)
+    @discord.ui.button(label='Tạo ticket', style=discord.ButtonStyle.danger, custom_id=TICKET_CREATE_ID)
     async def create(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self.cog.on_create_ticket_button(interaction)
 
@@ -129,31 +129,31 @@ class TicketActionView(discord.ui.View):
         super().__init__(timeout=None)
         self.cog = cog
 
-    @discord.ui.button(label='Đóng ticket', style=discord.ButtonStyle.danger, emoji='🔒', custom_id=TICKET_CLOSE_ID, row=0)
+    @discord.ui.button(label='Đóng ticket', style=discord.ButtonStyle.danger, custom_id=TICKET_CLOSE_ID, row=0)
     async def close(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self.cog.on_close_ticket_button(interaction)
 
-    @discord.ui.button(label='Claim ticket', style=discord.ButtonStyle.secondary, emoji='🟡', custom_id=TICKET_CLAIM_ID, row=0)
+    @discord.ui.button(label='Claim ticket', style=discord.ButtonStyle.secondary, custom_id=TICKET_CLAIM_ID, row=0)
     async def claim(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self.cog.on_claim_ticket_button(interaction)
 
-    @discord.ui.button(label='Transcript', style=discord.ButtonStyle.primary, emoji='📄', custom_id=TICKET_TRANSCRIPT_ID, row=0)
+    @discord.ui.button(label='Transcript', style=discord.ButtonStyle.primary, custom_id=TICKET_TRANSCRIPT_ID, row=0)
     async def transcript(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self.cog.on_transcript_button(interaction)
 
-    @discord.ui.button(label='Thêm người', style=discord.ButtonStyle.success, emoji='➕', custom_id=TICKET_ADD_USER_ID, row=1)
+    @discord.ui.button(label='Thêm người', style=discord.ButtonStyle.success, custom_id=TICKET_ADD_USER_ID, row=1)
     async def add_user(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self.cog.on_add_user_button(interaction)
 
-    @discord.ui.button(label='Xóa người', style=discord.ButtonStyle.secondary, emoji='➖', custom_id=TICKET_REMOVE_USER_ID, row=1)
+    @discord.ui.button(label='Xóa người', style=discord.ButtonStyle.secondary, custom_id=TICKET_REMOVE_USER_ID, row=1)
     async def remove_user(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self.cog.on_remove_user_button(interaction)
 
-    @discord.ui.button(label='Đổi tên', style=discord.ButtonStyle.secondary, emoji='✏️', custom_id=TICKET_RENAME_ID, row=1)
+    @discord.ui.button(label='Đổi tên', style=discord.ButtonStyle.secondary, custom_id=TICKET_RENAME_ID, row=1)
     async def rename(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self.cog.on_rename_ticket_button(interaction)
 
-    @discord.ui.button(label='Xóa ticket', style=discord.ButtonStyle.danger, emoji='🗑️', custom_id=TICKET_DELETE_ID, row=1)
+    @discord.ui.button(label='Xóa ticket', style=discord.ButtonStyle.danger, custom_id=TICKET_DELETE_ID, row=1)
     async def delete(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self.cog.on_delete_ticket_button(interaction)
 
@@ -1011,8 +1011,8 @@ class TicketCog(commands.Cog):
         if not guild or not isinstance(interaction.user, discord.Member):
             return
         await interaction.response.defer(ephemeral=True)
-        embed = discord.Embed(title='⚙️ Bảng Điều Khiển Bot', description='Bấm vào nút để Bật (Xanh) hoặc Tắt (Đỏ).', color=discord.Color.blue())
-        embed.add_field(name='🚫 Chống Spam & Nội Dung', value=(
+        embed = discord.Embed(title='Bảng điều khiển bot', description='Bấm vào nút để bật hoặc tắt.', color=discord.Color.blue())
+        embed.add_field(name='Chống spam', value=(
             '**Chặn Link**: Xoá tin nhắn chứa link.\n'
             '**Chặn Media**: Xoá Ảnh và Video.\n'
             '**Chặn File**: Xoá các file khác.\n'
@@ -1020,7 +1020,7 @@ class TicketCog(commands.Cog):
             '**Spam Nhanh**: Cảnh báo khi chat quá nhanh (2 msg/1s).\n'
             '**Spam Lặp**: Cảnh báo khi chat lặp lại (2 msg/60s).'
         ), inline=False)
-        embed.add_field(name='⭐ Tiện Ích', value=(
+        embed.add_field(name='Tiện ích', value=(
             '**TikTok**: Tự động tải video không logo.\n'
             '**Leveling**: Hệ thống XP và Role.\n'
             '**Sticky**: Ghim tin nhắn dưới cùng đoạn chat.'

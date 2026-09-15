@@ -5,6 +5,8 @@ import os
 import aiohttp
 import json
 import asyncio
+import time
+from datetime import datetime, timezone
 from utils.data_handler import load_data, save_data, get_guild_data, get_channel_settings, VIDEO_FOLDER
 from utils.antispam import should_process
 
@@ -12,6 +14,11 @@ import subprocess
 
 TIKTOK_REGEX = re.compile(r'https:\/\/(?:m|www|vt)?\.tiktok\.com\/\S+')
 
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+    "Referer": "https://www.tiktok.com/",
+    "Accept": "*/*"
+}
 
 def get_video_duration(input_path):
     try:
@@ -25,61 +32,46 @@ def get_video_duration(input_path):
         return float(res.stdout.strip())
     except Exception as e:
         print(f"ffprobe error: {e}")
-        return 0.0
+        return 30.0
 
-def compress_video(input_path, output_path, max_size_bytes):
+def compress_video_ultrafast(input_path, output_path, max_size_bytes):
     try:
         duration = get_video_duration(input_path)
         if duration <= 0:
             duration = 30.0
 
-        max_size_mb = max_size_bytes / (1024 * 1024)
-        # Mục tiêu dung lượng an toàn (~90% max_size_bytes để chắc chắn dưới ngưỡng của Discord)
-        target_size_bytes = int(max_size_bytes * 0.90)
-        audio_bitrate_kbps = 96
-        audio_bits = audio_bitrate_kbps * 1000 * duration
-
+        target_size_bytes = int(max_size_bytes * 0.92)
+        audio_bits = 128 * 1000 * duration
         remaining_bits = target_size_bytes * 8 - audio_bits
-        if remaining_bits < 100000 * duration:
-            video_bitrate_kbps = 150
-        else:
-            video_bitrate_kbps = int(remaining_bits / duration / 1000)
+        video_bitrate_kbps = max(200, min(6000, int(remaining_bits / duration / 1000)))
 
-        # Điều chỉnh độ phân giải và trần bitrate phù hợp với hạn mức server (10MB, 50MB hoặc 100MB)
-        if max_size_mb >= 80:
-            max_cap_bitrate = 18000
-            scale_filter = r"scale=-2:'min(1080,ih)'"
-        elif max_size_mb >= 40:
-            max_cap_bitrate = 12000
-            scale_filter = r"scale=-2:'min(1080,ih)'"
-        else:
-            max_cap_bitrate = 3000
-            scale_filter = r"scale=-2:'min(720,ih)'"
-
-        video_bitrate_kbps = max(150, min(video_bitrate_kbps, max_cap_bitrate))
-        maxrate_kbps = int(video_bitrate_kbps * 1.15)
-        bufsize_kbps = video_bitrate_kbps * 2
+        temp_output = f"{output_path}.tmp.{int(time.time() * 1000)}.mp4"
 
         cmd = [
             'ffmpeg', '-y',
             '-i', input_path,
             '-c:v', 'libx264',
+            '-preset', 'veryfast',
             '-b:v', f'{video_bitrate_kbps}k',
-            '-maxrate', f'{maxrate_kbps}k',
-            '-bufsize', f'{bufsize_kbps}k',
-            '-vf', scale_filter,
-            '-preset', 'faster',
-            '-c:a', 'aac',
-            '-b:a', f'{audio_bitrate_kbps}k',
-            output_path
+            '-c:a', 'copy',
+            '-movflags', '+faststart',
+            temp_output
         ]
 
-        res = subprocess.run(cmd, capture_output=True, timeout=180)
+        res = subprocess.run(cmd, capture_output=True, timeout=60)
         if res.returncode != 0:
-            print(f"FFmpeg compress error: {res.stderr.decode('utf-8', errors='ignore')}")
+            if os.path.exists(temp_output):
+                try: os.remove(temp_output)
+                except: pass
             return False
 
-        return os.path.exists(output_path) and os.path.getsize(output_path) > 0
+        if os.path.exists(temp_output) and os.path.getsize(temp_output) > 0:
+            if os.path.exists(output_path):
+                try: os.remove(output_path)
+                except: pass
+            os.rename(temp_output, output_path)
+            return True
+        return False
     except Exception as e:
         print(f"Compress Error: {e}")
         return False
@@ -93,6 +85,9 @@ class TikTok(commands.Cog):
     @commands.Cog.listener()
     async def on_message(self, message):
         if message.author.bot:
+            return
+
+        if message.created_at and (datetime.now(timezone.utc) - message.created_at).total_seconds() > 120:
             return
         
         match = TIKTOK_REGEX.search(message.content)
@@ -112,104 +107,148 @@ class TikTok(commands.Cog):
 
     async def process_tiktok_video(self, message, url, data):
         try:
-            async with self.bot.http_session.get("https://www.tikwm.com/api/", params={"url": url, "hd": 1}, timeout=20) as resp:
-                api_data = await resp.json()
-            
-            v_data = api_data.get("data")
-            if not v_data:
-                return
+            # Phản hồi ngay lập tức với typing (delay ~ 0)
+            async with message.channel.typing():
+                async with self.bot.http_session.get("https://www.tikwm.com/api/", params={"url": url, "hd": "1"}, headers=HEADERS, timeout=15) as resp:
+                    if resp.status != 200:
+                        return
+                    api_data = await resp.json()
+                
+                v_data = api_data.get("data")
+                if not v_data:
+                    return
 
-            vid = v_data.get("id", "video")
-            g_data = get_guild_data(data, message.guild.id)
-            if vid in g_data.get("bad_videos", []):
-                return
+                vid = v_data.get("id", "video")
+                g_data = get_guild_data(data, message.guild.id)
+                if vid in g_data.get("bad_videos", []):
+                    return
 
-            # Xử lý hình ảnh (Slides)
-            if v_data.get("images"):
-                folder_path = os.path.join(VIDEO_FOLDER, vid)
-                os.makedirs(folder_path, exist_ok=True)
-                
-                files_to_send = []
-                
-                # Audio
-                aud = v_data.get("play") or v_data.get("music")
-                if aud:
-                    aud_url = aud if aud.startswith("http") else f"https://www.tikwm.com{aud}"
-                    aud_path = os.path.join(folder_path, "audio.mp3")
-                    if not os.path.exists(aud_path):
-                        async with self.bot.http_session.get(aud_url) as r:
-                            with open(aud_path, "wb") as f:
-                                f.write(await r.read())
-                    files_to_send.append(discord.File(aud_path, filename="audio.mp3"))
+                # Xử lý hình ảnh (Slides / Photo mode)
+                if v_data.get("images"):
+                    folder_path = os.path.join(VIDEO_FOLDER, vid)
+                    os.makedirs(folder_path, exist_ok=True)
+                    
+                    # Tải song song audio và toàn bộ ảnh
+                    async def fetch_file(file_url, dest_path):
+                        if not os.path.exists(dest_path) or os.path.getsize(dest_path) == 0:
+                            try:
+                                temp = f"{dest_path}.tmp.{int(time.time()*1000)}"
+                                async with self.bot.http_session.get(file_url, headers=HEADERS) as r:
+                                    if r.status == 200:
+                                        content = await r.read()
+                                        if len(content) > 0:
+                                            with open(temp, "wb") as f:
+                                                f.write(content)
+                                            if os.path.exists(dest_path): os.remove(dest_path)
+                                            os.rename(temp, dest_path)
+                            except Exception as ex:
+                                print(f"Error fetching {file_url}: {ex}")
 
-                # Images
-                for i, img_url in enumerate(v_data["images"]):
-                    img_path = os.path.join(folder_path, f"{i}.jpg")
-                    if not os.path.exists(img_path):
-                        async with self.bot.http_session.get(img_url) as r:
-                            with open(img_path, "wb") as f:
-                                f.write(await r.read())
-                    files_to_send.append(discord.File(img_path, filename=f"image_{i}.jpg"))
-                
-                for i in range(0, len(files_to_send), 10):
-                    chunk = files_to_send[i:i+10]
-                    await message.reply(files=chunk, mention_author=True)
-                
-                try: await message.edit(suppress=True)
-                except: pass
-                
-                return
+                    tasks = []
+                    aud = v_data.get("play") or v_data.get("music")
+                    audio_path = os.path.join(folder_path, "audio.mp3") if aud else None
+                    if aud:
+                        aud_url = aud if aud.startswith("http") else f"https://www.tikwm.com{aud}"
+                        tasks.append(fetch_file(aud_url, audio_path))
 
-            # Xử lý video thường
-            link = v_data.get("play") or v_data.get("hdplay") or v_data.get("wmplay")
-            if not link:
-                return
-            
-            link = link if link.startswith("http") else f"https://www.tikwm.com{link}"
-            file_path = os.path.join(VIDEO_FOLDER, f"{vid}.mp4")
-            
-            if not os.path.exists(file_path):
-                async with self.bot.http_session.get(link) as r:
-                    content = await r.read()
-                    with open(file_path, "wb") as f:
-                        f.write(content)
-                        
-            # Lấy giới hạn dung lượng tải lên của server (tự động nhận Boost Server: 10MB, 50MB hoặc 100MB)
-            max_size = message.guild.filesize_limit if message.guild else (10 * 1024 * 1024)  # Trả về số byte: 10MB, 50MB hoặc 100MB tùy server
+                    img_targets = []
+                    for i, img_url in enumerate(v_data["images"]):
+                        if not img_url.startswith("http"):
+                            img_url = f"https://www.tikwm.com{img_url}"
+                        img_dest = os.path.join(folder_path, f"{i}.jpg")
+                        img_targets.append((f"image_{i+1}.jpg", img_dest))
+                        tasks.append(fetch_file(img_url, img_dest))
 
-            # Kiểm tra kích thước video gốc
-            file_size = os.path.getsize(file_path)
-            
-            # Nếu video vượt quá giới hạn server thì mới nén xuống dưới giới hạn tương ứng
-            if file_size > max_size:
-                max_size_mb = int(max_size / (1024 * 1024))
-                compressed_path = os.path.join(VIDEO_FOLDER, f"{vid}_compressed_{max_size_mb}mb.mp4")
-                
-                # Nén nếu chưa có file nén phù hợp hoặc file nén cũ vẫn vượt ngưỡng
-                if not os.path.exists(compressed_path) or os.path.getsize(compressed_path) > max_size:
-                    await asyncio.to_thread(compress_video, file_path, compressed_path, max_size)
-                
-                if os.path.exists(compressed_path) and os.path.getsize(compressed_path) > 0:
-                    file_path = compressed_path
+                    await asyncio.gather(*tasks)
 
-            # Kiểm tra dung lượng thực tế sau cùng
-            final_size = os.path.getsize(file_path)
-            if final_size > max_size:
-                # Nếu sau khi nén vẫn vượt giới hạn server, gửi link direct để Discord nhúng video player xem trực tiếp
+                    audio_file = audio_path if (audio_path and os.path.exists(audio_path) and os.path.getsize(audio_path) > 0) else None
+                    valid_imgs = [(name, path) for name, path in img_targets if os.path.exists(path) and os.path.getsize(path) > 0]
+
+                    if not valid_imgs and not audio_file:
+                        return
+
+                    batches = []
+                    cur_batch = []
+                    cur_size = 0
+
+                    if audio_file:
+                        cur_batch.append(discord.File(audio_file, filename="audio.mp3"))
+                        cur_size += os.path.getsize(audio_file)
+
+                    for name, path in valid_imgs:
+                        f_size = os.path.getsize(path)
+                        if cur_batch and (len(cur_batch) >= 10 or cur_size + f_size > 7500000):
+                            batches.append(cur_batch)
+                            cur_batch = []
+                            cur_size = 0
+                        cur_batch.append(discord.File(path, filename=name))
+                        cur_size += f_size
+
+                    if cur_batch:
+                        batches.append(cur_batch)
+
+                    for batch in batches:
+                        await message.reply(files=batch, mention_author=True)
+                        await asyncio.sleep(0.2)
+
+                    try: await message.edit(suppress=True)
+                    except: pass
+                    return
+
+                # Xử lý video thường: Luôn luôn ưu tiên chất lượng cao nhất (hdplay)
+                link = v_data.get("hdplay") or v_data.get("play") or v_data.get("wmplay")
+                if not link:
+                    return
+                
+                is_hd = bool(v_data.get("hdplay"))
+                file_name = f"{vid}_hd.mp4" if is_hd else f"{vid}.mp4"
+                link = link if link.startswith("http") else f"https://www.tikwm.com{link}"
+                file_path = os.path.join(VIDEO_FOLDER, file_name)
+                
+                if not os.path.exists(file_path) or os.path.getsize(file_path) == 0:
+                    temp_file = f"{file_path}.tmp.{int(time.time() * 1000)}"
+                    async with self.bot.http_session.get(link, headers=HEADERS) as r:
+                        if r.status == 200:
+                            content = await r.read()
+                            if len(content) > 0:
+                                with open(temp_file, "wb") as f:
+                                    f.write(content)
+                                if os.path.exists(file_path):
+                                    try: os.remove(file_path)
+                                    except: pass
+                                os.rename(temp_file, file_path)
+
+                if not os.path.exists(file_path) or os.path.getsize(file_path) == 0:
+                    return
+
+                max_size = message.guild.filesize_limit if message.guild else (10 * 1024 * 1024)
+                file_size = os.path.getsize(file_path)
+
+                send_file_path = file_path
+
+                # Nếu video dưới ngưỡng dung lượng: GỬI NGAY (0s delay, không chạy ffmpeg)
+                if file_size > max_size:
+                    max_size_mb = int(max_size / (1024 * 1024))
+                    compressed_name = f"{vid}_hd_fast_{max_size_mb}mb.mp4" if is_hd else f"{vid}_fast_{max_size_mb}mb.mp4"
+                    compressed_path = os.path.join(VIDEO_FOLDER, compressed_name)
+                    
+                    if not os.path.exists(compressed_path) or os.path.getsize(compressed_path) == 0 or os.path.getsize(compressed_path) > max_size:
+                        await asyncio.to_thread(compress_video_ultrafast, file_path, compressed_path, max_size)
+                    
+                    if os.path.exists(compressed_path) and os.path.getsize(compressed_path) > 0 and os.path.getsize(compressed_path) <= max_size:
+                        send_file_path = compressed_path
+                    else:
+                        await message.reply(content=link, mention_author=True)
+                        try: await message.edit(suppress=True)
+                        except: pass
+                        return
+
                 await message.reply(
-                    content=link,
-                    mention_author=True
+                    file=discord.File(send_file_path, filename=f"{vid}.mp4"),
+                    mention_author=True 
                 )
                 try: await message.edit(suppress=True)
                 except: pass
-                return
-
-            await message.reply(
-                file=discord.File(file_path),
-                mention_author=True 
-            )
-            try: await message.edit(suppress=True)
-            except: pass
 
         except Exception as e:
             print(f"TikTok Error: {e}")
