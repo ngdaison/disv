@@ -2,12 +2,14 @@ package dashboard
 
 import (
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
 
 	"botdis/internal/discord"
 	"botdis/internal/modules/feed"
+	"botdis/internal/modules/sticky"
 	"botdis/internal/modules/ticket"
 	"botdis/internal/modules/utility"
 	"botdis/internal/storage"
@@ -38,6 +40,13 @@ const (
 	ModalAddFeedYoutube = "modal_add_feed_youtube"
 	ModalAddFeedTiktok  = "modal_add_feed_tiktok"
 
+	BtnSettingSticky    = "setting_sticky"
+	ModalSettingSticky  = "modal_setting_sticky"
+	InputStickyContent  = "input_sticky_content"
+	BtnViewRoleMenu     = "setting_view_role_menu"
+	SelectRoleMenuRoles = "setting_select_role_menu_roles"
+	RoleMenuAssign      = "role_menu_assign"
+
 	BtnViewBotInfo = "setting_view_botinfo"
 	BtnViewPing    = "setting_view_ping"
 	BtnBackToMain  = "setting_back"
@@ -51,11 +60,15 @@ type feedSessionState struct {
 var userFeedState sync.Map
 
 type Service struct {
-	store *storage.MySQLStore
+	store         *storage.MySQLStore
+	stickyService *sticky.Service
 }
 
-func NewService(store *storage.MySQLStore) *Service {
-	return &Service{store: store}
+func NewService(store *storage.MySQLStore, stickyService *sticky.Service) *Service {
+	return &Service{
+		store:         store,
+		stickyService: stickyService,
+	}
 }
 
 func (s *Service) RegisterRoutes(r *discord.Router) {
@@ -96,6 +109,13 @@ func (s *Service) RegisterRoutes(r *discord.Router) {
 	r.RegisterComponent(SelectDeleteFeed, s.handleSelectDeleteFeed)
 	r.RegisterModal(ModalAddFeedYoutube, s.handleAddFeedYoutubeSubmit)
 	r.RegisterModal(ModalAddFeedTiktok, s.handleAddFeedTiktokSubmit)
+
+	r.RegisterComponent(BtnSettingSticky, s.handleSettingSticky)
+	r.RegisterModal(ModalSettingSticky, s.handleSubmitSettingSticky)
+
+	r.RegisterComponent(BtnViewRoleMenu, s.handleViewRoleMenu)
+	r.RegisterComponent(SelectRoleMenuRoles, s.handleSelectRoleMenuRoles)
+	r.RegisterComponent(RoleMenuAssign, s.handleRoleMenuAssign)
 
 	r.RegisterComponent(BtnViewBotInfo, s.handleViewBotInfo)
 	r.RegisterComponent(BtnViewPing, s.handleViewPing)
@@ -576,7 +596,9 @@ func (s *Service) buildDashboardEmbed(guildID, channelID string) *discordgo.Mess
 					"**AI chat** Trò chuyện tự động với AI\n" +
 					"**AutoRole** Gán role tự động cho thành viên mới\n" +
 					"**Ticket** Hệ thống hỗ trợ thành viên\n" +
-					"**Video mới** Tự động thông báo khi có video mới từ YouTube và TikTok",
+					"**Video mới** Tự động thông báo khi có video mới từ YouTube và TikTok\n" +
+					"**Gửi** Ghim tin nhắn luôn ở cuối kênh\n" +
+					"**Menu role** Tạo bảng tự chọn và nhận role",
 			},
 		},
 	}
@@ -629,6 +651,16 @@ func (s *Service) buildDashboardComponents(guildID, channelID string) []discordg
 				discordgo.Button{
 					Label:    "Video mới",
 					CustomID: BtnViewFeed,
+					Style:    discordgo.SecondaryButton,
+				},
+				discordgo.Button{
+					Label:    "Gửi",
+					CustomID: BtnSettingSticky,
+					Style:    discordgo.SecondaryButton,
+				},
+				discordgo.Button{
+					Label:    "Menu role",
+					CustomID: BtnViewRoleMenu,
 					Style:    discordgo.SecondaryButton,
 				},
 			},
@@ -1050,3 +1082,324 @@ func (s *Service) buildFeedConfigView(guildID, currentChannelID, userID string) 
 
 	return embed, components
 }
+
+func (s *Service) handleSettingSticky(sess *discordgo.Session, i *discordgo.InteractionCreate) {
+	if !s.isUserAdmin(sess, i.GuildID, i.Member.User.ID) {
+		_ = sess.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+			Type: discordgo.InteractionResponseChannelMessageWithSource,
+			Data: &discordgo.InteractionResponseData{
+				Content: "Bạn cần quyền Administrator để thực hiện thao tác này",
+				Flags:   discordgo.MessageFlagsEphemeral,
+			},
+		})
+		return
+	}
+
+	settings := s.store.GetChannelSettings(i.GuildID, i.ChannelID)
+
+	_ = sess.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+		Type: discordgo.InteractionResponseModal,
+		Data: &discordgo.InteractionResponseData{
+			CustomID: ModalSettingSticky,
+			Title:    "Cài đặt tin nhắn ghim",
+			Components: []discordgo.MessageComponent{
+				discordgo.ActionsRow{
+					Components: []discordgo.MessageComponent{
+						discordgo.TextInput{
+							CustomID:    InputStickyContent,
+							Label:       "Nội dung tin nhắn ghim",
+							Style:       discordgo.TextInputParagraph,
+							Placeholder: "## Kênh này chỉ được gửi Video\n-# không được gửi\nĐể trống để tắt",
+							Value:       settings.StickyContent,
+							Required:    false,
+							MaxLength:   2000,
+						},
+					},
+				},
+			},
+		},
+	})
+}
+
+func (s *Service) handleSubmitSettingSticky(sess *discordgo.Session, i *discordgo.InteractionCreate) {
+	data := i.ModalSubmitData()
+	var content string
+	for _, row := range data.Components {
+		if actionRow, ok := row.(*discordgo.ActionsRow); ok {
+			for _, c := range actionRow.Components {
+				if input, ok := c.(*discordgo.TextInput); ok && input.CustomID == InputStickyContent {
+					content = input.Value
+				}
+			}
+		}
+	}
+
+	err := s.stickyService.SetSticky(sess, i.GuildID, i.ChannelID, content)
+	if err != nil {
+		_ = sess.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+			Type: discordgo.InteractionResponseChannelMessageWithSource,
+			Data: &discordgo.InteractionResponseData{
+				Content: fmt.Sprintf("Lỗi khi cài đặt tin nhắn ghim: %v", err),
+				Flags:   discordgo.MessageFlagsEphemeral,
+			},
+		})
+		return
+	}
+
+	msgText := "Đã cài đặt tin nhắn ghim thành công"
+	if strings.TrimSpace(content) == "" {
+		msgText = "Đã tắt tin nhắn ghim tại kênh này"
+	}
+
+	_ = sess.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+		Type: discordgo.InteractionResponseChannelMessageWithSource,
+		Data: &discordgo.InteractionResponseData{
+			Content: msgText,
+			Flags:   discordgo.MessageFlagsEphemeral,
+		},
+	})
+}
+
+func (s *Service) handleViewRoleMenu(sess *discordgo.Session, i *discordgo.InteractionCreate) {
+	if !s.isUserAdmin(sess, i.GuildID, i.Member.User.ID) {
+		_ = sess.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+			Type: discordgo.InteractionResponseChannelMessageWithSource,
+			Data: &discordgo.InteractionResponseData{
+				Content: "Bạn cần quyền Administrator để thực hiện thao tác này",
+				Flags:   discordgo.MessageFlagsEphemeral,
+			},
+		})
+		return
+	}
+
+	minVal := 1
+	_ = sess.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+		Type: discordgo.InteractionResponseChannelMessageWithSource,
+		Data: &discordgo.InteractionResponseData{
+			Flags: discordgo.MessageFlagsEphemeral,
+			Embeds: []*discordgo.MessageEmbed{
+				{
+					Title:       "Tạo menu role",
+					Description: "Chọn các role muốn đưa vào menu tự nhận role (tối đa 25 role)",
+					Color:       0x3498db,
+				},
+			},
+			Components: []discordgo.MessageComponent{
+				discordgo.ActionsRow{
+					Components: []discordgo.MessageComponent{
+						discordgo.SelectMenu{
+							MenuType:    discordgo.RoleSelectMenu,
+							CustomID:    SelectRoleMenuRoles,
+							Placeholder: "Chọn các role đưa vào menu...",
+							MinValues:   &minVal,
+							MaxValues:   25,
+						},
+					},
+				},
+			},
+		},
+	})
+}
+
+func (s *Service) handleSelectRoleMenuRoles(sess *discordgo.Session, i *discordgo.InteractionCreate) {
+	if !s.isUserAdmin(sess, i.GuildID, i.Member.User.ID) {
+		return
+	}
+
+	data := i.MessageComponentData()
+	roleIDs := data.Values
+	if len(roleIDs) == 0 {
+		_ = sess.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+			Type: discordgo.InteractionResponseUpdateMessage,
+			Data: &discordgo.InteractionResponseData{
+				Content:    "Vui lòng chọn ít nhất 1 role",
+				Embeds:     []*discordgo.MessageEmbed{},
+				Components: []discordgo.MessageComponent{},
+			},
+		})
+		return
+	}
+
+	gRoles, err := sess.GuildRoles(i.GuildID)
+	if err != nil {
+		_ = sess.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+			Type: discordgo.InteractionResponseUpdateMessage,
+			Data: &discordgo.InteractionResponseData{
+				Content:    "Không thể tải danh sách role của server",
+				Embeds:     []*discordgo.MessageEmbed{},
+				Components: []discordgo.MessageComponent{},
+			},
+		})
+		return
+	}
+
+	roleMap := make(map[string]*discordgo.Role)
+	for _, r := range gRoles {
+		roleMap[r.ID] = r
+	}
+
+	var validRoles []*discordgo.Role
+	for _, rID := range roleIDs {
+		if r, ok := roleMap[rID]; ok {
+			if r.ID == i.GuildID || r.Managed {
+				continue
+			}
+			validRoles = append(validRoles, r)
+		}
+	}
+
+	if len(validRoles) == 0 {
+		_ = sess.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+			Type: discordgo.InteractionResponseUpdateMessage,
+			Data: &discordgo.InteractionResponseData{
+				Content:    "Không có role nào hợp lệ để tạo menu role",
+				Embeds:     []*discordgo.MessageEmbed{},
+				Components: []discordgo.MessageComponent{},
+			},
+		})
+		return
+	}
+
+	sort.Slice(validRoles, func(a, b int) bool {
+		return validRoles[a].Position > validRoles[b].Position
+	})
+
+	if len(validRoles) > 25 {
+		validRoles = validRoles[:25]
+	}
+
+	var options []discordgo.SelectMenuOption
+	for _, r := range validRoles {
+		options = append(options, discordgo.SelectMenuOption{
+			Label:       r.Name,
+			Value:       r.ID,
+			Description: "Nhận hoặc bỏ role " + r.Name,
+		})
+	}
+
+	zero := 0
+	embed := &discordgo.MessageEmbed{
+		Title:       "Nhận role",
+		Description: "Chọn role bạn muốn nhận hoặc bỏ trong danh sách dưới đây",
+		Color:       0xf1c40f,
+	}
+
+	components := []discordgo.MessageComponent{
+		discordgo.ActionsRow{
+			Components: []discordgo.MessageComponent{
+				discordgo.SelectMenu{
+					CustomID:    RoleMenuAssign,
+					Placeholder: "Chọn role muốn nhận hoặc bỏ...",
+					MinValues:   &zero,
+					MaxValues:   len(options),
+					Options:     options,
+				},
+			},
+		},
+	}
+
+	_, err = sess.ChannelMessageSendComplex(i.ChannelID, &discordgo.MessageSend{
+		Embeds:     []*discordgo.MessageEmbed{embed},
+		Components: components,
+	})
+	if err != nil {
+		_ = sess.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+			Type: discordgo.InteractionResponseUpdateMessage,
+			Data: &discordgo.InteractionResponseData{
+				Content:    fmt.Sprintf("Lỗi khi gửi menu role vào kênh: %v", err),
+				Embeds:     []*discordgo.MessageEmbed{},
+				Components: []discordgo.MessageComponent{},
+			},
+		})
+		return
+	}
+
+	_ = sess.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+		Type: discordgo.InteractionResponseUpdateMessage,
+		Data: &discordgo.InteractionResponseData{
+			Content:    "Đã gửi bảng menu role thành công vào kênh này",
+			Embeds:     []*discordgo.MessageEmbed{},
+			Components: []discordgo.MessageComponent{},
+		},
+	})
+}
+
+func (s *Service) handleRoleMenuAssign(sess *discordgo.Session, i *discordgo.InteractionCreate) {
+	_ = sess.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+		Type: discordgo.InteractionResponseDeferredChannelMessageWithSource,
+		Data: &discordgo.InteractionResponseData{
+			Flags: discordgo.MessageFlagsEphemeral,
+		},
+	})
+
+	if i.Member == nil || i.Member.User == nil {
+		_, _ = sess.FollowupMessageCreate(i.Interaction, true, &discordgo.WebhookParams{
+			Content: "Không tìm thấy thông tin người dùng",
+		})
+		return
+	}
+
+	selectedIDs := i.MessageComponentData().Values
+	selectedMap := make(map[string]bool)
+	for _, id := range selectedIDs {
+		selectedMap[id] = true
+	}
+
+	allOptionIDs := make(map[string]bool)
+	if i.Message != nil {
+		for _, row := range i.Message.Components {
+			if actionRow, ok := row.(*discordgo.ActionsRow); ok {
+				for _, c := range actionRow.Components {
+					if sel, ok := c.(*discordgo.SelectMenu); ok && sel.CustomID == RoleMenuAssign {
+						for _, opt := range sel.Options {
+							allOptionIDs[opt.Value] = true
+						}
+					}
+				}
+			}
+		}
+	}
+
+	member, err := sess.GuildMember(i.GuildID, i.Member.User.ID)
+	if err != nil || member == nil {
+		_, _ = sess.FollowupMessageCreate(i.Interaction, true, &discordgo.WebhookParams{
+			Content: "Không thể lấy thông tin thành viên từ server",
+		})
+		return
+	}
+
+	currentRoles := make(map[string]bool)
+	for _, r := range member.Roles {
+		currentRoles[r] = true
+	}
+
+	addedCount := 0
+	removedCount := 0
+
+	for rID := range allOptionIDs {
+		want := selectedMap[rID]
+		has := currentRoles[rID]
+
+		if want && !has {
+			if err := sess.GuildMemberRoleAdd(i.GuildID, member.User.ID, rID); err == nil {
+				addedCount++
+			}
+		} else if !want && has {
+			if err := sess.GuildMemberRoleRemove(i.GuildID, member.User.ID, rID); err == nil {
+				removedCount++
+			}
+		}
+	}
+
+	var statusText string
+	if addedCount > 0 || removedCount > 0 {
+		statusText = fmt.Sprintf("Đã cập nhật role thành công (nhận %d, bỏ %d)", addedCount, removedCount)
+	} else {
+		statusText = "Đã cập nhật role thành công (không có thay đổi)"
+	}
+
+	_, _ = sess.FollowupMessageCreate(i.Interaction, true, &discordgo.WebhookParams{
+		Content: statusText,
+	})
+}
+

@@ -15,6 +15,7 @@ import (
 	"botdis/internal/modules/feed"
 	"botdis/internal/modules/leveling"
 	"botdis/internal/modules/moderation"
+	"botdis/internal/modules/sticky"
 	"botdis/internal/modules/ticket"
 	"botdis/internal/modules/tiktok"
 	"botdis/internal/modules/utility"
@@ -44,7 +45,8 @@ func main() {
 	levelingService := leveling.NewService(store)
 	utilityService := utility.NewService()
 	autorolesService := autoroles.NewService(store)
-	dashboardService := dashboard.NewService(store)
+	stickyService := sticky.NewService(store)
+	dashboardService := dashboard.NewService(store, stickyService)
 	chataiService := chatai.NewService(cfg.AIAPIKey, store)
 	ticketService := ticket.NewService(store, chataiService)
 	feedService := feed.NewService(store)
@@ -74,6 +76,7 @@ func main() {
 	sess.Identify.Intents = discordgo.IntentsGuilds |
 		discordgo.IntentsGuildMessages |
 		discordgo.IntentsGuildMembers |
+		discordgo.IntentsGuildMessageTyping |
 		discordgo.IntentsMessageContent
 
 	sess.AddHandler(func(s *discordgo.Session, r *discordgo.Ready) {
@@ -221,10 +224,16 @@ func main() {
 		ticketService.HandleChannelDelete(s, ch)
 	})
 
+	sess.AddHandler(func(s *discordgo.Session, t *discordgo.TypingStart) {
+		stickyService.HandleTypingStart(s, t)
+	})
+
 	sess.AddHandler(func(s *discordgo.Session, m *discordgo.MessageCreate) {
 		if m.Author == nil || m.Author.Bot {
 			return
 		}
+
+		stickyService.HandleMessage(s, m)
 
 		violated := antiSpam.HandleMessage(s, m)
 		if violated {
