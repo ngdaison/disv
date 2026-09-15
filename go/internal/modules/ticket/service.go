@@ -24,19 +24,21 @@ const (
 )
 
 type Service struct {
-	store         *storage.MySQLStore
-	aiService     *chatai.Service
-	lock          sync.RWMutex
-	userCooldowns map[string]time.Time
-	activeTickets map[string]string // userID -> channelID
+	store          *storage.MySQLStore
+	aiService      *chatai.Service
+	lock           sync.RWMutex
+	userCooldowns  map[string]time.Time
+	activeTickets  map[string]string // userID -> channelID
+	closingTickets map[string]bool   // channelID -> true
 }
 
 func NewService(store *storage.MySQLStore, aiService *chatai.Service) *Service {
 	return &Service{
-		store:         store,
-		aiService:     aiService,
-		userCooldowns: make(map[string]time.Time),
-		activeTickets: make(map[string]string),
+		store:          store,
+		aiService:      aiService,
+		userCooldowns:  make(map[string]time.Time),
+		activeTickets:  make(map[string]string),
+		closingTickets: make(map[string]bool),
 	}
 }
 
@@ -59,6 +61,7 @@ func (s *Service) HandleChannelDelete(sess *discordgo.Session, ch *discordgo.Cha
 			delete(s.activeTickets, uID)
 		}
 	}
+	delete(s.closingTickets, chID)
 	s.lock.Unlock()
 
 	_ = s.store.CloseTicket(chID, "Kênh bị xóa trên Discord")
@@ -342,8 +345,41 @@ func (s *Service) handleCloseTicket(sess *discordgo.Session, i *discordgo.Intera
 	chID := i.ChannelID
 	user := i.Member.User
 
+	s.lock.Lock()
+	if s.closingTickets == nil {
+		s.closingTickets = make(map[string]bool)
+	}
+	if s.closingTickets[chID] || s.store.IsTicketClosed(chID) {
+		s.lock.Unlock()
+		_ = sess.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+			Type: discordgo.InteractionResponseChannelMessageWithSource,
+			Data: &discordgo.InteractionResponseData{
+				Content: "Ticket này đã được đóng rồi",
+				Flags:   discordgo.MessageFlagsEphemeral,
+			},
+		})
+		return
+	}
+	s.closingTickets[chID] = true
+	s.lock.Unlock()
+
+	// Vô hiệu hóa nút Đóng trên tin nhắn ngay lập tức (chỉ bấm được 1 lần)
 	_ = sess.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-		Type: discordgo.InteractionResponseDeferredMessageUpdate,
+		Type: discordgo.InteractionResponseUpdateMessage,
+		Data: &discordgo.InteractionResponseData{
+			Components: []discordgo.MessageComponent{
+				discordgo.ActionsRow{
+					Components: []discordgo.MessageComponent{
+						discordgo.Button{
+							Label:    "Đã đóng",
+							Style:    discordgo.SecondaryButton,
+							CustomID: "ticket_closed_disabled",
+							Disabled: true,
+						},
+					},
+				},
+			},
+		},
 	})
 
 	msgs, _ := s.fetchAllChannelMessages(sess, chID)
@@ -440,6 +476,7 @@ func (s *Service) cleanupExpiredTickets(sess *discordgo.Session) {
 				delete(s.activeTickets, uID)
 			}
 		}
+		delete(s.closingTickets, rec.ChannelID)
 		s.lock.Unlock()
 	}
 }

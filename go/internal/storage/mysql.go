@@ -609,6 +609,18 @@ func (m *MySQLStore) FindTicketByChannel(channelID string) (ownerID string, foun
 	return ownerID, err == nil
 }
 
+func (m *MySQLStore) IsTicketClosed(channelID string) bool {
+	m.lock.RLock()
+	defer m.lock.RUnlock()
+
+	var status string
+	err := m.db.QueryRow("SELECT status FROM tickets WHERE channel_id = ? LIMIT 1", channelID).Scan(&status)
+	if err != nil {
+		return false
+	}
+	return status == "closed" || status == "deleted"
+}
+
 func (m *MySQLStore) LogTicketAction(guildID, channelID, action, userID, targetID, reason string) {
 	m.lock.Lock()
 	defer m.lock.Unlock()
