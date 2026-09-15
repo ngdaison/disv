@@ -250,7 +250,7 @@ func (s *Service) handleSubmitTicketProblem(sess *discordgo.Session, i *discordg
 
 	welcomeEmbed := &discordgo.MessageEmbed{
 		Title:       aiTitle,
-		Description: fmt.Sprintf("Người tạo <@%s>\nMô tả %s", user.ID, problemText),
+		Description: fmt.Sprintf("Người tạo <@%s>\n%s", user.ID, problemText),
 		Color:       0x2ecc71,
 	}
 
