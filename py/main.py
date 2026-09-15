@@ -19,8 +19,31 @@ if sys.platform == "win32":
     except Exception:
         pass
 
+# Setup paths & working directory
+current_dir = os.path.dirname(os.path.abspath(__file__))
+project_root = os.path.abspath(os.path.join(current_dir, ".."))
+
+if current_dir not in sys.path:
+    sys.path.insert(0, current_dir)
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
+
+if not os.path.exists("config.json") and os.path.exists(os.path.join(project_root, "config.json")):
+    os.chdir(project_root)
+
 # Load Config
-with open('config.json', 'r', encoding='utf-8') as f:
+config_file = "config.json"
+if not os.path.exists(config_file):
+    if os.path.exists(os.path.join(project_root, "config.json")):
+        config_file = os.path.join(project_root, "config.json")
+    elif os.path.exists(os.path.join(current_dir, "config.json")):
+        config_file = os.path.join(current_dir, "config.json")
+    elif os.path.exists("config.example.json"):
+        config_file = "config.example.json"
+    elif os.path.exists(os.path.join(project_root, "config.example.json")):
+        config_file = os.path.join(project_root, "config.example.json")
+
+with open(config_file, 'r', encoding='utf-8') as f:
     config = json.load(f)
 
 intents = discord.Intents.default()
