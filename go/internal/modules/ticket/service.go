@@ -19,6 +19,7 @@ import (
 const (
 	BtnCreate         = "ticket_create"
 	BtnClose          = "ticket_close"
+	BtnReopen         = "ticket_reopen"
 	ModalCreateTicket = "modal_ticket_create"
 	InputContent      = "ticket_content_input"
 )
@@ -45,6 +46,7 @@ func NewService(store *storage.MySQLStore, aiService *chatai.Service) *Service {
 func (s *Service) RegisterRoutes(r *discord.Router) {
 	r.RegisterComponent(BtnCreate, s.handlePromptCreateTicket)
 	r.RegisterComponent(BtnClose, s.handleCloseTicket)
+	r.RegisterComponent(BtnReopen, s.handleReopenTicket)
 	r.RegisterModal(ModalCreateTicket, s.handleSubmitTicketProblem)
 	r.RegisterModal("modal_ticket_create_problem", s.handleSubmitTicketProblem)
 }
@@ -363,18 +365,26 @@ func (s *Service) handleCloseTicket(sess *discordgo.Session, i *discordgo.Intera
 	s.closingTickets[chID] = true
 	s.lock.Unlock()
 
-	// Vô hiệu hóa nút Đóng trên tin nhắn ngay lập tức (chỉ bấm được 1 lần)
+	var msgContent string
+	var msgEmbeds []*discordgo.MessageEmbed
+	if i.Message != nil {
+		msgContent = i.Message.Content
+		msgEmbeds = i.Message.Embeds
+	}
+
+	// Đổi nút thành "Mở lại", giữ nguyên 100% nội dung và embed cũ
 	_ = sess.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 		Type: discordgo.InteractionResponseUpdateMessage,
 		Data: &discordgo.InteractionResponseData{
+			Content: msgContent,
+			Embeds:  msgEmbeds,
 			Components: []discordgo.MessageComponent{
 				discordgo.ActionsRow{
 					Components: []discordgo.MessageComponent{
 						discordgo.Button{
-							Label:    "Đã đóng",
+							Label:    "Mở lại",
 							Style:    discordgo.SecondaryButton,
-							CustomID: "ticket_closed_disabled",
-							Disabled: true,
+							CustomID: BtnReopen,
 						},
 					},
 				},
@@ -435,13 +445,112 @@ func (s *Service) handleCloseTicket(sess *discordgo.Session, i *discordgo.Intera
 		}
 		_, _ = sess.ChannelEdit(chID, editData)
 	}
+}
 
-	closeEmbed := &discordgo.MessageEmbed{
-		Title: "Ticket đã đóng",
-		Color: 0xe74c3c,
+func (s *Service) handleReopenTicket(sess *discordgo.Session, i *discordgo.InteractionCreate) {
+	chID := i.ChannelID
+	user := i.Member.User
+
+	ownerID, found := s.store.FindTicketByChannel(chID)
+	tCfg := s.store.GetTicketConfig(i.GuildID)
+
+	isStaff := false
+	if tCfg != nil && tCfg.StaffRoleID != "" {
+		for _, r := range i.Member.Roles {
+			if r == tCfg.StaffRoleID {
+				isStaff = true
+				break
+			}
+		}
+	}
+	isAdmin := false
+	if member, err := sess.GuildMember(i.GuildID, user.ID); err == nil && member != nil {
+		if guild, err := sess.Guild(i.GuildID); err == nil && guild != nil {
+			if guild.OwnerID == user.ID {
+				isAdmin = true
+			} else {
+				for _, r := range guild.Roles {
+					if r.Permissions&discordgo.PermissionAdministrator != 0 {
+						for _, mr := range member.Roles {
+							if mr == r.ID {
+								isAdmin = true
+								break
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+	isOwner := found && ownerID == user.ID
+
+	if !isStaff && !isAdmin && !isOwner {
+		_ = sess.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+			Type: discordgo.InteractionResponseChannelMessageWithSource,
+			Data: &discordgo.InteractionResponseData{
+				Content: "Chỉ người tạo ticket hoặc quản lý mới có quyền mở lại ticket",
+				Flags:   discordgo.MessageFlagsEphemeral,
+			},
+		})
+		return
 	}
 
-	_, _ = sess.ChannelMessageSendEmbed(chID, closeEmbed)
+	s.lock.Lock()
+	delete(s.closingTickets, chID)
+	if found && ownerID != "" {
+		s.activeTickets[ownerID] = chID
+	}
+	s.lock.Unlock()
+
+	_ = s.store.ReopenTicket(chID)
+	s.store.LogTicketAction(i.GuildID, chID, "Mở lại ticket", user.ID, "", "")
+
+	if found && ownerID != "" {
+		_ = sess.ChannelPermissionSet(chID, ownerID, discordgo.PermissionOverwriteTypeMember,
+			discordgo.PermissionViewChannel|discordgo.PermissionSendMessages|discordgo.PermissionReadMessageHistory|discordgo.PermissionAttachFiles|discordgo.PermissionEmbedLinks,
+			0,
+		)
+	}
+
+	ch, err := sess.Channel(chID)
+	if err == nil && ch != nil {
+		newName := ch.Name
+		newName = strings.TrimPrefix(newName, "dong-")
+		newName = strings.TrimPrefix(newName, "closed-")
+
+		editData := &discordgo.ChannelEdit{Name: newName}
+		if tCfg != nil && tCfg.TicketCategoryID != "" {
+			editData.ParentID = tCfg.TicketCategoryID
+		}
+		_, _ = sess.ChannelEdit(chID, editData)
+	}
+
+	var msgContent string
+	var msgEmbeds []*discordgo.MessageEmbed
+	if i.Message != nil {
+		msgContent = i.Message.Content
+		msgEmbeds = i.Message.Embeds
+	}
+
+	// Đổi nút lại thành "Đóng", giữ nguyên 100% nội dung và embed cũ
+	_ = sess.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+		Type: discordgo.InteractionResponseUpdateMessage,
+		Data: &discordgo.InteractionResponseData{
+			Content: msgContent,
+			Embeds:  msgEmbeds,
+			Components: []discordgo.MessageComponent{
+				discordgo.ActionsRow{
+					Components: []discordgo.MessageComponent{
+						discordgo.Button{
+							Label:    "Đóng",
+							Style:    discordgo.DangerButton,
+							CustomID: BtnClose,
+						},
+					},
+				},
+			},
+		},
+	})
 }
 
 func (s *Service) StartAutoDeleteWorker(sess *discordgo.Session) {

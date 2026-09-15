@@ -694,6 +694,18 @@ func (m *MySQLStore) CloseTicketWithSchedule(channelID, reason string, days int)
 	return err
 }
 
+func (m *MySQLStore) ReopenTicket(channelID string) error {
+	m.lock.Lock()
+	defer m.lock.Unlock()
+
+	_, err := m.db.Exec(`
+		UPDATE tickets 
+		SET status = 'open', close_reason = '', closed_at = NULL, scheduled_delete_at = NULL
+		WHERE channel_id = ?;
+	`, channelID)
+	return err
+}
+
 func (m *MySQLStore) GetExpiredTickets() ([]ExpiredTicketRecord, error) {
 	m.lock.RLock()
 	defer m.lock.RUnlock()
