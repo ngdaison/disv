@@ -22,6 +22,49 @@ const (
 	BtnReopen         = "ticket_reopen"
 	ModalCreateTicket = "modal_ticket_create"
 	InputContent      = "ticket_content_input"
+
+	TicketMemberAllow = int64(
+		discordgo.PermissionViewChannel |
+			discordgo.PermissionSendMessages |
+			discordgo.PermissionAddReactions |
+			discordgo.PermissionEmbedLinks |
+			discordgo.PermissionAttachFiles |
+			discordgo.PermissionUseExternalEmojis |
+			discordgo.PermissionUseExternalStickers |
+			discordgo.PermissionReadMessageHistory |
+			discordgo.PermissionSendVoiceMessages,
+	)
+
+	TicketMemberDeny = int64(
+		discordgo.PermissionManageChannels |
+			discordgo.PermissionManageRoles |
+			discordgo.PermissionManageWebhooks |
+			discordgo.PermissionCreateInstantInvite |
+			discordgo.PermissionSendMessagesInThreads |
+			discordgo.PermissionCreatePublicThreads |
+			discordgo.PermissionCreatePrivateThreads |
+			discordgo.PermissionManageMessages |
+			discordgo.PermissionManageThreads |
+			discordgo.PermissionMentionEveryone |
+			discordgo.PermissionUseApplicationCommands |
+			discordgo.PermissionSendTTSMessages |
+			discordgo.PermissionSendPolls |
+			discordgo.PermissionUseExternalApps,
+	)
+
+	TicketMemberClosedAllow = int64(
+		discordgo.PermissionViewChannel |
+			discordgo.PermissionAddReactions |
+			discordgo.PermissionEmbedLinks |
+			discordgo.PermissionAttachFiles |
+			discordgo.PermissionUseExternalEmojis |
+			discordgo.PermissionUseExternalStickers |
+			discordgo.PermissionReadMessageHistory,
+	)
+
+	TicketMemberClosedDeny = TicketMemberDeny |
+		discordgo.PermissionSendMessages |
+		discordgo.PermissionSendVoiceMessages
 )
 
 type Service struct {
@@ -201,7 +244,8 @@ func (s *Service) handleSubmitTicketProblem(sess *discordgo.Session, i *discordg
 		{
 			ID:    user.ID,
 			Type:  discordgo.PermissionOverwriteTypeMember,
-			Allow: discordgo.PermissionViewChannel | discordgo.PermissionSendMessages | discordgo.PermissionReadMessageHistory | discordgo.PermissionAttachFiles | discordgo.PermissionEmbedLinks,
+			Allow: TicketMemberAllow,
+			Deny:  TicketMemberDeny,
 		},
 	}
 
@@ -209,7 +253,7 @@ func (s *Service) handleSubmitTicketProblem(sess *discordgo.Session, i *discordg
 		overwrites = append(overwrites, &discordgo.PermissionOverwrite{
 			ID:    tCfg.StaffRoleID,
 			Type:  discordgo.PermissionOverwriteTypeRole,
-			Allow: discordgo.PermissionViewChannel | discordgo.PermissionSendMessages | discordgo.PermissionReadMessageHistory | discordgo.PermissionAttachFiles | discordgo.PermissionEmbedLinks,
+			Allow: TicketMemberAllow | discordgo.PermissionManageMessages,
 		})
 	}
 
@@ -411,8 +455,8 @@ func (s *Service) handleCloseTicket(sess *discordgo.Session, i *discordgo.Intera
 
 	if found && ownerID != "" {
 		_ = sess.ChannelPermissionSet(chID, ownerID, discordgo.PermissionOverwriteTypeMember,
-			0,
-			discordgo.PermissionViewChannel|discordgo.PermissionSendMessages|discordgo.PermissionReadMessageHistory|discordgo.PermissionAttachFiles|discordgo.PermissionEmbedLinks,
+			TicketMemberClosedAllow,
+			TicketMemberClosedDeny,
 		)
 	}
 
@@ -422,10 +466,10 @@ func (s *Service) handleCloseTicket(sess *discordgo.Session, i *discordgo.Intera
 	if err == nil && ch != nil {
 		for _, overwrite := range ch.PermissionOverwrites {
 			if overwrite.Type == discordgo.PermissionOverwriteTypeMember && overwrite.ID != sess.State.User.ID {
-				if overwrite.ID == ownerID || (tCfg != nil && overwrite.ID != tCfg.StaffRoleID) {
+				if tCfg == nil || overwrite.ID != tCfg.StaffRoleID {
 					_ = sess.ChannelPermissionSet(chID, overwrite.ID, discordgo.PermissionOverwriteTypeMember,
-						0,
-						discordgo.PermissionViewChannel|discordgo.PermissionSendMessages|discordgo.PermissionReadMessageHistory|discordgo.PermissionAttachFiles|discordgo.PermissionEmbedLinks,
+						TicketMemberClosedAllow,
+						TicketMemberClosedDeny,
 					)
 				}
 			}
@@ -507,13 +551,24 @@ func (s *Service) handleReopenTicket(sess *discordgo.Session, i *discordgo.Inter
 
 	if found && ownerID != "" {
 		_ = sess.ChannelPermissionSet(chID, ownerID, discordgo.PermissionOverwriteTypeMember,
-			discordgo.PermissionViewChannel|discordgo.PermissionSendMessages|discordgo.PermissionReadMessageHistory|discordgo.PermissionAttachFiles|discordgo.PermissionEmbedLinks,
-			0,
+			TicketMemberAllow,
+			TicketMemberDeny,
 		)
 	}
 
 	ch, err := sess.Channel(chID)
 	if err == nil && ch != nil {
+		for _, overwrite := range ch.PermissionOverwrites {
+			if overwrite.Type == discordgo.PermissionOverwriteTypeMember && overwrite.ID != sess.State.User.ID {
+				if tCfg == nil || overwrite.ID != tCfg.StaffRoleID {
+					_ = sess.ChannelPermissionSet(chID, overwrite.ID, discordgo.PermissionOverwriteTypeMember,
+						TicketMemberAllow,
+						TicketMemberDeny,
+					)
+				}
+			}
+		}
+
 		newName := ch.Name
 		newName = strings.TrimPrefix(newName, "dong-")
 		newName = strings.TrimPrefix(newName, "closed-")
