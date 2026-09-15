@@ -1,0 +1,164 @@
+import discord
+from discord.ext import commands
+import json
+import os
+import aiohttp
+
+from utils.data_handler import load_data, save_data, get_channel_settings
+from utils.antispam import should_process
+
+
+class ChatAI(commands.Cog):
+    def __init__(self, bot):
+        self.bot = bot
+
+    def _split_message(self, text, limit=2000):
+        # Split text into chunks no longer than `limit`, prefer splitting on newlines or spaces
+        if not text:
+            return []
+        chunks = []
+        while text:
+            if len(text) <= limit:
+                chunks.append(text)
+                break
+            # try split at last double newline within limit
+            idx = text.rfind('\n\n', 0, limit)
+            if idx == -1:
+                idx = text.rfind('\n', 0, limit)
+            if idx == -1:
+                idx = text.rfind(' ', 0, limit)
+            if idx == -1:
+                # forced split
+                idx = limit
+            chunk = text[:idx].rstrip()
+            if not chunk:
+                chunk = text[:limit]
+                text = text[limit:]
+            else:
+                text = text[idx:].lstrip()
+            chunks.append(chunk)
+        return chunks
+
+    @commands.Cog.listener()
+    async def on_message(self, message: discord.Message):
+        if message.author.bot:
+            return
+
+        # Prevent processing DMs
+        if not message.guild:
+            return
+
+        if not should_process(f"ai_{message.id}"):
+            return
+
+        all_data = load_data()
+        c_settings = get_channel_settings(all_data, message.guild.id, message.channel.id)
+        print(f"[ChatAI] Message from {message.author} in {message.guild}/{message.channel}: '{message.content[:80]}'")
+        print(f"[ChatAI] Channel ai_enabled={c_settings.get('ai_enabled')}")
+        if not c_settings.get("ai_enabled"):
+            print("[ChatAI] AI not enabled for this channel - skipping")
+            return
+
+        # Load API key from config
+        try:
+            with open('config.json', 'r', encoding='utf-8') as f:
+                cfg = json.load(f)
+            API_KEY = cfg.get('ai_api_key', '')
+        except Exception:
+            API_KEY = ''
+
+        if not API_KEY:
+            print("[ChatAI] No AI API key configured")
+            return
+
+        # Load system prompt if available
+        system_prompt = ""
+        if os.path.exists('train.txt'):
+            try:
+                with open('train.txt', 'r', encoding='utf-8') as f:
+                    system_prompt = f.read()
+            except Exception:
+                system_prompt = ""
+
+        URL = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent?key={API_KEY}"
+
+        payload = {
+            "contents": [
+                {
+                    "role": "user",
+                    "parts": [
+                        {
+                            "text": (system_prompt + "\n\nNgười dùng hỏi:\n" + message.content)
+                        }
+                    ]
+                }
+            ]
+        }
+
+        try:
+            print(f"[ChatAI] Sending request to AI API (URL={URL})")
+            async with self.bot.http_session.post(URL, json=payload, headers={"Content-Type": "application/json"}) as resp:
+                resp_text = await resp.text()
+                print(f"[ChatAI] AI API responded status={resp.status}")
+                if resp.status != 200:
+                    print(f"[ChatAI] AI API error status={resp.status} text={resp_text}")
+                    return
+                try:
+                    resp_data = await resp.json()
+                except Exception:
+                    print(f"[ChatAI] AI API returned non-json: {resp_text}")
+                    return
+        except Exception as e:
+            print(f"[ChatAI] AI request exception: {e}")
+            return
+
+        try:
+            reply = resp_data.get('candidates', [])[0].get('content', {}).get('parts', [])[0].get('text', '')
+        except Exception as e:
+            print(f"[ChatAI] Failed extracting reply: {e}")
+            reply = ''
+
+        if not reply:
+            print("[ChatAI] Empty reply from AI")
+            return
+
+        # Decide which bot instance should send the reply.
+        try:
+            is_chatai_instance = getattr(self.bot, "is_chatai", False)
+            print(f"[ChatAI] is_chatai_instance={is_chatai_instance}")
+            if not is_chatai_instance:
+                chatai_bot = getattr(self.bot, "chatai_bot", None)
+                has_chatai_member = False
+                if chatai_bot and getattr(chatai_bot, "user", None):
+                    try:
+                        has_chatai_member = bool(message.guild.get_member(chatai_bot.user.id))
+                    except Exception:
+                        has_chatai_member = False
+                print(f"[ChatAI] chatai_bot present={bool(chatai_bot)}, chatai_member_in_guild={has_chatai_member}")
+                if chatai_bot and has_chatai_member:
+                    print("[ChatAI] chatai bot is present in guild - skipping reply from this bot")
+                    return
+
+            # Split long replies into Discord-safe chunks and send sequentially
+            chunks = self._split_message(reply, limit=2000)
+            if not chunks:
+                print("[ChatAI] No chunks to send")
+                return
+            print(f"[ChatAI] Sending {len(chunks)} chunk(s) to channel {message.channel}")
+            for i, chunk in enumerate(chunks):
+                try:
+                    if i == 0:
+                        await message.reply(chunk, mention_author=False)
+                    else:
+                        await message.channel.send(chunk)
+                except Exception as e:
+                    print(f"[ChatAI] Failed sending chunk {i}: {e}")
+                    return
+            print("[ChatAI] Reply sent")
+        except Exception as e:
+            print(f"[ChatAI] Failed sending AI reply: {e}")
+            return
+
+
+async def setup(bot):
+    await bot.add_cog(ChatAI(bot))

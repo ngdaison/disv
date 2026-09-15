@@ -1,0 +1,47 @@
+# Binaries
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+botdis.exe
+go/botdis.exe
+
+# Configuration with credentials / secrets
+config.json
+.env
+*.env
+
+# SQLite & JSON Databases / Runtime data
+*.db
+*.sqlite
+*.sqlite3
+database.db
+data.json
+tickets.json
+ticket_logs.json
+config_ticket.json
+
+# Media files
+videotiktok/*
+!videotiktok/.gitkeep
+*.mp4
+*.mp3
+
+# Python cache & virtual environments
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+env/
+venv/
+ENV/
+
+# IDE & OS files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db

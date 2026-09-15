@@ -1,0 +1,16 @@
+{
+    "bot_token": "YOUR_DISCORD_BOT_TOKEN",
+    "rapid_api_key": "YOUR_RAPID_API_KEY",
+    "ai_api_key": "YOUR_GEMINI_API_KEY",
+    "chatai_token": "",
+    "bot_prefix": "/",
+    "status_message": "Đang quản lý server",
+    "max_video_size_mb": 10,
+    "mysql": {
+        "host": "127.0.0.1",
+        "port": 3306,
+        "user": "root",
+        "password": "",
+        "database": "botdis"
+    }
+}
