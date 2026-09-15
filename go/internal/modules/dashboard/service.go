@@ -987,7 +987,7 @@ func (s *Service) buildFeedConfigView(guildID, currentChannelID, userID string) 
 			discordgo.SelectMenu{
 				MenuType:    discordgo.RoleSelectMenu,
 				CustomID:    SelectFeedRole,
-				Placeholder: "Chọn role ping (hoặc bấm Không ping)...",
+				Placeholder: "Chọn role ping...",
 			},
 		},
 	})
