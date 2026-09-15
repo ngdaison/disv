@@ -1,6 +1,7 @@
 package feed
 
 import (
+	"encoding/json"
 	"encoding/xml"
 	"fmt"
 	"io"
@@ -211,27 +212,27 @@ func ResolveYouTubeChannel(rawURL string) (channelID, channelTitle, latestVideoI
 		return "", "", "", "", fmt.Errorf("không tìm thấy Channel ID của kênh YouTube này")
 	}
 
-	// Đọc RSS feed để lấy tên kênh và video mới nhất
+	// Đọc RSS feed để lấy tên kênh và video mới nhất, đồng thời xác thực kênh tồn tại
 	feedURL := fmt.Sprintf("https://www.youtube.com/feeds/videos.xml?channel_id=%s", channelID)
 	req, err := http.NewRequest("GET", feedURL, nil)
 	if err != nil {
-		return channelID, "YouTube Channel", "", "", nil
+		return "", "", "", "", fmt.Errorf("không thể khởi tạo yêu cầu kiểm tra kênh YouTube")
 	}
 	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
 
 	resp, err := httpClient.Do(req)
 	if err != nil {
-		return channelID, "YouTube Channel", "", "", nil
+		return "", "", "", "", fmt.Errorf("không thể kết nối kiểm tra kênh YouTube")
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return channelID, "YouTube Channel", "", "", nil
+		return "", "", "", "", fmt.Errorf("kênh YouTube này không tồn tại hoặc không hợp lệ")
 	}
 
 	var feed XMLFeed
 	if err := xml.NewDecoder(resp.Body).Decode(&feed); err != nil {
-		return channelID, "YouTube Channel", "", "", nil
+		return "", "", "", "", fmt.Errorf("không thể đọc dữ liệu kênh YouTube")
 	}
 
 	channelTitle = feed.Title
@@ -239,7 +240,7 @@ func ResolveYouTubeChannel(rawURL string) (channelID, channelTitle, latestVideoI
 		channelTitle = feed.Author.Name
 	}
 	if channelTitle == "" {
-		channelTitle = "YouTube Channel"
+		return "", "", "", "", fmt.Errorf("kênh YouTube này không tồn tại")
 	}
 
 	if len(feed.Entries) > 0 {
@@ -308,24 +309,40 @@ func ResolveTikTokChannel(rawURL string) (username, displayName, latestVideoID, 
 		return "", "", "", "", fmt.Errorf("đường dẫn kênh TikTok không hợp lệ")
 	}
 
-	// Lấy thông tin kênh từ oEmbed TikTok
+	// 1. Kiểm tra sự tồn tại của kênh TikTok qua oEmbed chính thức
 	oembedURL := fmt.Sprintf("https://www.tiktok.com/oembed?url=https://www.tiktok.com/@%s", username)
-	req, _ := http.NewRequest("GET", oembedURL, nil)
+	req, reqErr := http.NewRequest("GET", oembedURL, nil)
+	if reqErr != nil {
+		return "", "", "", "", fmt.Errorf("không thể khởi tạo yêu cầu kiểm tra kênh TikTok")
+	}
 	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
 	resp, respErr := httpClient.Do(req)
+	if respErr != nil {
+		return "", "", "", "", fmt.Errorf("không thể kết nối kiểm tra kênh TikTok")
+	}
+	defer resp.Body.Close()
 
-	displayName = "@" + username
-	if respErr == nil && resp.StatusCode == http.StatusOK {
-		defer resp.Body.Close()
-		bodyBytes, _ := io.ReadAll(resp.Body)
-		// Trích xuất author_name nếu có
-		nameRegex := regexp.MustCompile(`\"author_name\":\"([^\"]+)\"`)
-		if m := nameRegex.FindStringSubmatch(string(bodyBytes)); len(m) > 1 {
-			displayName = m[1]
-		}
+	if resp.StatusCode != http.StatusOK {
+		return "", "", "", "", fmt.Errorf("kênh TikTok @%s không tồn tại", username)
 	}
 
-	// Kiểm tra video mới nhất
+	var oembedData struct {
+		AuthorName string `json:"author_name"`
+		Title      string `json:"title"`
+	}
+	if jsonErr := json.NewDecoder(resp.Body).Decode(&oembedData); jsonErr != nil || (oembedData.AuthorName == "" && oembedData.Title == "") {
+		return "", "", "", "", fmt.Errorf("kênh TikTok @%s không tồn tại", username)
+	}
+
+	displayName = oembedData.AuthorName
+	if displayName == "" {
+		displayName = oembedData.Title
+	}
+	if displayName == "" {
+		displayName = "@" + username
+	}
+
+	// 2. Kiểm tra video mới nhất
 	vID, vURL, _, _ := FetchLatestTikTokVideo(username)
 	return username, displayName, vID, vURL, nil
 }

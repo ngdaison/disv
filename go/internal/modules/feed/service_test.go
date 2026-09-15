@@ -39,3 +39,17 @@ func TestResolveTikTokChannel(t *testing.T) {
 		t.Errorf("Kỳ vọng có tên hiển thị, nhận được chuỗi rỗng")
 	}
 }
+
+func TestResolveFakeChannels(t *testing.T) {
+	// Fake YouTube channel ID
+	_, _, _, _, ytErr := ResolveYouTubeChannel("UC0000000000000000000000")
+	if ytErr == nil {
+		t.Errorf("Kỳ vọng kênh YouTube giả mạo phải báo lỗi, nhưng lại thành công")
+	}
+
+	// Fake TikTok username
+	_, _, _, _, ttErr := ResolveTikTokChannel("abcdefghijklmn998877665544332211")
+	if ttErr == nil {
+		t.Errorf("Kỳ vọng kênh TikTok giả mạo phải báo lỗi, nhưng lại thành công")
+	}
+}

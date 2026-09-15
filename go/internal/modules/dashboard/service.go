@@ -816,7 +816,7 @@ func (s *Service) handleAddFeedYoutubeSubmit(sess *discordgo.Session, i *discord
 		_ = sess.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 			Type: discordgo.InteractionResponseChannelMessageWithSource,
 			Data: &discordgo.InteractionResponseData{
-				Content: fmt.Sprintf("Không thể thêm kênh: %v", err),
+				Content: fmt.Sprintf("Không thể thêm kênh vì %v", err),
 				Flags:   discordgo.MessageFlagsEphemeral,
 			},
 		})
@@ -868,7 +868,7 @@ func (s *Service) handleAddFeedTiktokSubmit(sess *discordgo.Session, i *discordg
 		_ = sess.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 			Type: discordgo.InteractionResponseChannelMessageWithSource,
 			Data: &discordgo.InteractionResponseData{
-				Content: fmt.Sprintf("Không thể thêm kênh: %v", err),
+				Content: fmt.Sprintf("Không thể thêm kênh vì %v", err),
 				Flags:   discordgo.MessageFlagsEphemeral,
 			},
 		})
