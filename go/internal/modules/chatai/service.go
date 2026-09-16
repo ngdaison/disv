@@ -21,11 +21,12 @@ var httpClient = &http.Client{Timeout: 30 * time.Second}
 
 type Service struct {
 	apiKey       string
+	localAIURL   string
 	systemPrompt string
 	store        *storage.MySQLStore
 }
 
-func NewService(apiKey string, store *storage.MySQLStore) *Service {
+func NewService(apiKey, localAIURL string, store *storage.MySQLStore) *Service {
 	possiblePaths := []string{"train.txt", "../train.txt", filepath.Join(".", "train.txt")}
 	var prompt string
 	for _, p := range possiblePaths {
@@ -35,8 +36,13 @@ func NewService(apiKey string, store *storage.MySQLStore) *Service {
 		}
 	}
 
+	if localAIURL == "" {
+		localAIURL = "http://localhost:6660/api"
+	}
+
 	return &Service{
 		apiKey:       apiKey,
+		localAIURL:   localAIURL,
 		systemPrompt: prompt,
 		store:        store,
 	}
@@ -62,11 +68,21 @@ func (s *Service) HandleMessage(sess *discordgo.Session, m *discordgo.MessageCre
 		return
 	}
 
-	if s.apiKey == "" {
+	if s.localAIURL == "" && s.apiKey == "" {
 		return
 	}
 
 	go s.generateAndReply(sess, m)
+}
+
+type localAIRequest struct {
+	Prompt string `json:"prompt"`
+}
+
+type localAIResponse struct {
+	Text           string      `json:"text"`
+	Thoughts       interface{} `json:"thoughts"`
+	ConversationID string      `json:"conversation_id"`
 }
 
 type geminiRequest struct {
@@ -88,99 +104,45 @@ type geminiResponse struct {
 	} `json:"candidates"`
 }
 
-func (s *Service) generateAndReply(sess *discordgo.Session, m *discordgo.MessageCreate) {
-	_ = sess.ChannelTyping(m.ChannelID)
-
-	cleanContent := m.Content
-	if sess.State != nil && sess.State.User != nil {
-		cleanContent = strings.ReplaceAll(cleanContent, fmt.Sprintf("<@%s>", sess.State.User.ID), "")
-		cleanContent = strings.ReplaceAll(cleanContent, fmt.Sprintf("<@!%s>", sess.State.User.ID), "")
-	}
-	cleanContent = strings.TrimSpace(cleanContent)
-
-	if cleanContent == "" {
-		cleanContent = "Xin chào!"
+func (s *Service) callLocalAI(prompt string, timeout time.Duration) (string, error) {
+	if s.localAIURL == "" {
+		return "", fmt.Errorf("local AI URL chưa cấu hình")
 	}
 
-	userPrompt := cleanContent
-	if s.systemPrompt != "" {
-		userPrompt = s.systemPrompt + "\n\nNgười dùng hỏi:\n" + cleanContent
-	}
-
-	reqBody := geminiRequest{
-		Contents: []struct {
-			Role  string `json:"role"`
-			Parts []struct {
-				Text string `json:"text"`
-			} `json:"parts"`
-		}{
-			{
-				Role: "user",
-				Parts: []struct {
-					Text string `json:"text"`
-				}{
-					{Text: userPrompt},
-				},
-			},
-		},
-	}
-
+	endpoint := strings.TrimRight(s.localAIURL, "/") + "/generate"
+	reqBody := localAIRequest{Prompt: prompt}
 	jsonBytes, err := json.Marshal(reqBody)
 	if err != nil {
-		return
+		return "", err
 	}
 
-	url := fmt.Sprintf("https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent?key=%s", s.apiKey)
-	resp, err := httpClient.Post(url, "application/json", bytes.NewBuffer(jsonBytes))
+	client := &http.Client{Timeout: timeout}
+	resp, err := client.Post(endpoint, "application/json", bytes.NewBuffer(jsonBytes))
 	if err != nil {
-		log.Printf("Lỗi gọi Gemini API: %v", err)
-		return
+		return "", err
 	}
 	defer resp.Body.Close()
 
-	var gResp geminiResponse
-	if err := json.NewDecoder(resp.Body).Decode(&gResp); err != nil {
-		return
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("local AI trả về mã %d", resp.StatusCode)
 	}
 
-	if len(gResp.Candidates) == 0 || len(gResp.Candidates[0].Content.Parts) == 0 {
-		return
+	var lResp localAIResponse
+	if err := json.NewDecoder(resp.Body).Decode(&lResp); err != nil {
+		return "", err
 	}
 
-	replyText := gResp.Candidates[0].Content.Parts[0].Text
-
-	for len(replyText) > 0 {
-		chunkSize := 1950
-		if len(replyText) < chunkSize {
-			chunkSize = len(replyText)
-		}
-		chunk := replyText[:chunkSize]
-		replyText = replyText[chunkSize:]
-
-		_, _ = sess.ChannelMessageSendReply(m.ChannelID, chunk, m.Reference())
+	reply := strings.TrimSpace(lResp.Text)
+	if reply == "" {
+		return "", fmt.Errorf("kết quả từ local AI rỗng")
 	}
+	return reply, nil
 }
 
-func (s *Service) GenerateTicketMeta(problem string) (string, string) {
-	cleanProblem := strings.TrimSpace(problem)
-	if cleanProblem == "" {
-		return "Hỗ trợ thành viên", "ho-tro-thanh-vien"
+func (s *Service) callGemini(prompt string, timeout time.Duration) (string, error) {
+	if s.apiKey == "" {
+		return "", fmt.Errorf("gemini api key trống")
 	}
-
-	smartTitle, smartSlug := GenerateSmartTicketMeta(cleanProblem)
-
-	if s == nil || s.apiKey == "" {
-		return smartTitle, smartSlug
-	}
-
-	prompt := fmt.Sprintf(`Người dùng Discord cần hỗ trợ nội dung: "%s"
-Nhiệm vụ:
-1. Đặt 1 tiêu đề tóm tắt vấn đề thật thông minh, ngắn gọn, dưới 35 ký tự, viết hoa chữ đầu câu (Ví dụ: "Tạo tài khoản bachoammo", "Lỗi nạp thẻ", "Quên mật khẩu nick kiyovn"). Tuyệt đối không trích lại cả câu người dùng, không có icon, không có dấu hai chấm.
-2. Đặt 1 tên slug kênh Discord bằng chữ thường không dấu, phân tách bằng dấu gạch ngang, bắt đầu bằng ho-tro-, tối đa 22 ký tự (Ví dụ: ho-tro-bachoammo, ho-tro-nap-the, ho-tro-mat-khau).
-
-Trả về đúng 2 dòng:
-Dòng 1: Tiêu đề
-Dòng 2: Slug`, cleanProblem)
 
 	reqBody := geminiRequest{
 		Contents: []struct {
@@ -202,37 +164,129 @@ Dòng 2: Slug`, cleanProblem)
 
 	jsonBytes, err := json.Marshal(reqBody)
 	if err != nil {
-		return smartTitle, smartSlug
+		return "", err
 	}
 
 	url := fmt.Sprintf("https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent?key=%s", s.apiKey)
-	req, err := http.NewRequest("POST", url, bytes.NewBuffer(jsonBytes))
+	client := &http.Client{Timeout: timeout}
+	resp, err := client.Post(url, "application/json", bytes.NewBuffer(jsonBytes))
 	if err != nil {
-		return smartTitle, smartSlug
-	}
-	req.Header.Set("Content-Type", "application/json")
-
-	client := &http.Client{Timeout: 6 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		return smartTitle, smartSlug
+		return "", err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return smartTitle, smartSlug
+		return "", fmt.Errorf("gemini trả về mã %d", resp.StatusCode)
 	}
 
 	var gResp geminiResponse
 	if err := json.NewDecoder(resp.Body).Decode(&gResp); err != nil {
-		return smartTitle, smartSlug
+		return "", err
 	}
 
 	if len(gResp.Candidates) == 0 || len(gResp.Candidates[0].Content.Parts) == 0 {
-		return smartTitle, smartSlug
+		return "", fmt.Errorf("gemini không có phản hồi")
 	}
 
-	reply := strings.TrimSpace(gResp.Candidates[0].Content.Parts[0].Text)
+	return strings.TrimSpace(gResp.Candidates[0].Content.Parts[0].Text), nil
+}
+
+func (s *Service) generateAndReply(sess *discordgo.Session, m *discordgo.MessageCreate) {
+	_ = sess.ChannelTyping(m.ChannelID)
+
+	cleanContent := m.Content
+	if sess.State != nil && sess.State.User != nil {
+		cleanContent = strings.ReplaceAll(cleanContent, fmt.Sprintf("<@%s>", sess.State.User.ID), "")
+		cleanContent = strings.ReplaceAll(cleanContent, fmt.Sprintf("<@!%s>", sess.State.User.ID), "")
+	}
+	cleanContent = strings.TrimSpace(cleanContent)
+
+	if cleanContent == "" {
+		cleanContent = "Xin chào!"
+	}
+
+	userPrompt := cleanContent
+	if s.systemPrompt != "" {
+		userPrompt = s.systemPrompt + "\n\nNgười dùng hỏi:\n" + cleanContent
+	}
+
+	var replyText string
+	var err error
+
+	// 1. Ưu tiên Local AI API
+	if s.localAIURL != "" {
+		replyText, err = s.callLocalAI(userPrompt, 45*time.Second)
+		if err != nil {
+			log.Printf("Lỗi gọi Local AI: %v", err)
+		}
+	}
+
+	// 2. Fallback qua Gemini nếu Local AI không trả về
+	if replyText == "" && s.apiKey != "" {
+		replyText, err = s.callGemini(userPrompt, 30*time.Second)
+		if err != nil {
+			log.Printf("Lỗi gọi Gemini fallback: %v", err)
+		}
+	}
+
+	if replyText == "" {
+		return
+	}
+
+	for len(replyText) > 0 {
+		chunkSize := 1950
+		if len(replyText) < chunkSize {
+			chunkSize = len(replyText)
+		}
+		chunk := replyText[:chunkSize]
+		replyText = replyText[chunkSize:]
+
+		_, _ = sess.ChannelMessageSendReply(m.ChannelID, chunk, m.Reference())
+	}
+}
+
+func (s *Service) GenerateTicketMeta(problem string) (string, string) {
+	cleanProblem := strings.TrimSpace(problem)
+	if cleanProblem == "" {
+		return "Hỗ trợ thành viên", "ho-tro-thanh-vien"
+	}
+
+	smartTitle, smartSlug := GenerateSmartTicketMeta(cleanProblem)
+
+	prompt := fmt.Sprintf(`Người dùng Discord cần hỗ trợ nội dung: "%s"
+Nhiệm vụ:
+1. Đặt 1 tiêu đề tóm tắt vấn đề thật thông minh, ngắn gọn, dưới 35 ký tự, viết hoa chữ đầu câu (Ví dụ: "Tạo tài khoản bachoammo", "Lỗi nạp thẻ", "Quên mật khẩu nick kiyovn"). Tuyệt đối không trích lại cả câu người dùng, không có icon, không có dấu hai chấm.
+2. Đặt 1 tên slug kênh Discord bằng chữ thường không dấu, phân tách bằng dấu gạch ngang, bắt đầu bằng ho-tro-, tối đa 22 ký tự (Ví dụ: ho-tro-bachoammo, ho-tro-nap-the, ho-tro-mat-khau).
+
+Trả về đúng 2 dòng:
+Dòng 1: Tiêu đề
+Dòng 2: Slug`, cleanProblem)
+
+	// 1. Thử gọi Local AI API trước (http://localhost:6660/api)
+	if s != nil && s.localAIURL != "" {
+		if rawText, err := s.callLocalAI(prompt, 15*time.Second); err == nil {
+			if title, slug, ok := parseTicketMeta(rawText); ok {
+				return title, slug
+			}
+		} else {
+			log.Printf("Lỗi gọi Local AI cho Ticket Meta: %v", err)
+		}
+	}
+
+	// 2. Thử fallback qua Gemini nếu có apiKey
+	if s != nil && s.apiKey != "" {
+		if rawText, err := s.callGemini(prompt, 6*time.Second); err == nil {
+			if title, slug, ok := parseTicketMeta(rawText); ok {
+				return title, slug
+			}
+		}
+	}
+
+	// 3. Fallback dự phòng thông minh không cần mạng
+	return smartTitle, smartSlug
+}
+
+func parseTicketMeta(reply string) (string, string, bool) {
 	lines := strings.Split(reply, "\n")
 	var validLines []string
 	for _, l := range lines {
@@ -242,29 +296,52 @@ Dòng 2: Slug`, cleanProblem)
 		}
 	}
 
-	if len(validLines) >= 2 {
-		aiTitle := strings.ReplaceAll(validLines[0], ":", "")
-		aiTitle = strings.ReplaceAll(aiTitle, "\"", "")
-		aiTitle = strings.TrimSpace(aiTitle)
-
-		aiSlug := strings.ToLower(validLines[1])
-		aiSlug = strings.ReplaceAll(aiSlug, "\"", "")
-		aiSlug = ToSlug(aiSlug)
-		if !strings.HasPrefix(aiSlug, "ho-tro-") {
-			aiSlug = "ho-tro-" + aiSlug
-		}
-		if len(aiSlug) > 26 {
-			aiSlug = aiSlug[:26]
-		}
-		if len(aiTitle) > 0 {
-			r := []rune(aiTitle)
-			r[0] = unicode.ToUpper(r[0])
-			aiTitle = string(r)
-			return aiTitle, aiSlug
-		}
+	if len(validLines) < 2 {
+		return "", "", false
 	}
 
-	return smartTitle, smartSlug
+	aiTitle := cleanTicketMetaLine(validLines[0])
+	aiSlug := cleanTicketMetaLine(validLines[1])
+
+	aiTitle = strings.ReplaceAll(aiTitle, ":", "")
+	aiTitle = strings.TrimSpace(aiTitle)
+
+	aiSlug = strings.ToLower(aiSlug)
+	aiSlug = ToSlug(aiSlug)
+	if !strings.HasPrefix(aiSlug, "ho-tro-") {
+		aiSlug = "ho-tro-" + aiSlug
+	}
+	if len(aiSlug) > 22 {
+		aiSlug = aiSlug[:22]
+	}
+	if len(aiTitle) > 35 {
+		aiTitle = aiTitle[:35]
+	}
+
+	if len(aiTitle) > 0 {
+		r := []rune(aiTitle)
+		r[0] = unicode.ToUpper(r[0])
+		aiTitle = string(r)
+		return aiTitle, aiSlug, true
+	}
+
+	return "", "", false
+}
+
+func cleanTicketMetaLine(line string) string {
+	line = strings.TrimSpace(line)
+	prefixes := []string{"dòng 1:", "dòng 2:", "tiêu đề:", "slug:", "1.", "2.", "title:"}
+	lower := strings.ToLower(line)
+	for _, p := range prefixes {
+		if strings.HasPrefix(lower, p) {
+			line = strings.TrimSpace(line[len(p):])
+			lower = strings.ToLower(line)
+		}
+	}
+	line = strings.ReplaceAll(line, "\"", "")
+	line = strings.ReplaceAll(line, "`", "")
+	line = strings.ReplaceAll(line, "*", "")
+	return strings.TrimSpace(line)
 }
 
 func GenerateSmartTicketMeta(problem string) (string, string) {

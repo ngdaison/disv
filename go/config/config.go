@@ -20,6 +20,7 @@ type Config struct {
 	RapidAPIKey   string      `json:"rapid_api_key"`
 	AIAPIKey      string      `json:"ai_api_key"`
 	ChatAIToken   string      `json:"chatai_token"`
+	LocalAIURL    string      `json:"local_ai_url"`
 	BotPrefix     string      `json:"bot_prefix"`
 	StatusMessage string      `json:"status_message"`
 	MySQL         MySQLConfig `json:"mysql"`
@@ -55,6 +56,10 @@ func LoadConfig() (*Config, error) {
 
 	if cfg.BotToken == "" {
 		return nil, fmt.Errorf("bot_token không được để trống trong %s", foundPath)
+	}
+
+	if cfg.LocalAIURL == "" {
+		cfg.LocalAIURL = "http://localhost:6660/api"
 	}
 
 	return &cfg, nil

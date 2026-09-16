@@ -59,16 +59,18 @@ class ChatAI(commands.Cog):
             print("[ChatAI] AI not enabled for this channel - skipping")
             return
 
-        # Load API key from config
+        # Load config
         try:
             with open('config.json', 'r', encoding='utf-8') as f:
                 cfg = json.load(f)
             API_KEY = cfg.get('ai_api_key', '')
+            LOCAL_AI_URL = cfg.get('local_ai_url', 'http://localhost:6660/api')
         except Exception:
             API_KEY = ''
+            LOCAL_AI_URL = 'http://localhost:6660/api'
 
-        if not API_KEY:
-            print("[ChatAI] No AI API key configured")
+        if not API_KEY and not LOCAL_AI_URL:
+            print("[ChatAI] No AI API or Local AI configured")
             return
 
         # Load system prompt if available
@@ -80,43 +82,55 @@ class ChatAI(commands.Cog):
             except Exception:
                 system_prompt = ""
 
-        URL = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent?key={API_KEY}"
+        full_prompt = (system_prompt + "\n\nNgười dùng hỏi:\n" + message.content) if system_prompt else message.content
+        reply = ''
 
-        payload = {
-            "contents": [
-                {
-                    "role": "user",
-                    "parts": [
-                        {
-                            "text": (system_prompt + "\n\nNgười dùng hỏi:\n" + message.content)
-                        }
-                    ]
-                }
-            ]
-        }
+        # 1. Try Local AI API first
+        if LOCAL_AI_URL:
+            local_endpoint = LOCAL_AI_URL.rstrip('/') + '/generate'
+            try:
+                print(f"[ChatAI] Sending request to Local AI API ({local_endpoint})")
+                async with self.bot.http_session.post(local_endpoint, json={"prompt": full_prompt}, headers={"Content-Type": "application/json"}, timeout=aiohttp.ClientTimeout(total=45)) as resp:
+                    if resp.status == 200:
+                        resp_data = await resp.json()
+                        reply = resp_data.get('text', '').strip()
+                        print(f"[ChatAI] Local AI reply received, length={len(reply)}")
+                    else:
+                        print(f"[ChatAI] Local AI error status={resp.status}")
+            except Exception as e:
+                print(f"[ChatAI] Local AI request exception: {e}")
 
-        try:
-            print(f"[ChatAI] Sending request to AI API (URL={URL})")
-            async with self.bot.http_session.post(URL, json=payload, headers={"Content-Type": "application/json"}) as resp:
-                resp_text = await resp.text()
-                print(f"[ChatAI] AI API responded status={resp.status}")
-                if resp.status != 200:
-                    print(f"[ChatAI] AI API error status={resp.status} text={resp_text}")
-                    return
-                try:
-                    resp_data = await resp.json()
-                except Exception:
-                    print(f"[ChatAI] AI API returned non-json: {resp_text}")
-                    return
-        except Exception as e:
-            print(f"[ChatAI] AI request exception: {e}")
-            return
+        # 2. Fallback to Gemini if no reply and API_KEY configured
+        if not reply and API_KEY:
+            URL = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent?key={API_KEY}"
+            payload = {
+                "contents": [
+                    {
+                        "role": "user",
+                        "parts": [
+                            {
+                                "text": full_prompt
+                            }
+                        ]
+                    }
+                ]
+            }
 
-        try:
-            reply = resp_data.get('candidates', [])[0].get('content', {}).get('parts', [])[0].get('text', '')
-        except Exception as e:
-            print(f"[ChatAI] Failed extracting reply: {e}")
-            reply = ''
+            try:
+                print(f"[ChatAI] Sending request to Gemini API (URL={URL})")
+                async with self.bot.http_session.post(URL, json=payload, headers={"Content-Type": "application/json"}, timeout=aiohttp.ClientTimeout(total=30)) as resp:
+                    resp_text = await resp.text()
+                    print(f"[ChatAI] Gemini API responded status={resp.status}")
+                    if resp.status == 200:
+                        try:
+                            resp_data = await resp.json()
+                            reply = resp_data.get('candidates', [])[0].get('content', {}).get('parts', [])[0].get('text', '').strip()
+                        except Exception:
+                            pass
+                    else:
+                        print(f"[ChatAI] Gemini API error status={resp.status} text={resp_text}")
+            except Exception as e:
+                print(f"[ChatAI] Gemini request exception: {e}")
 
         if not reply:
             print("[ChatAI] Empty reply from AI")

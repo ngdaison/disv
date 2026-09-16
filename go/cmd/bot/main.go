@@ -47,7 +47,7 @@ func main() {
 	autorolesService := autoroles.NewService(store)
 	stickyService := sticky.NewService(store)
 	dashboardService := dashboard.NewService(store, stickyService)
-	chataiService := chatai.NewService(cfg.AIAPIKey, store)
+	chataiService := chatai.NewService(cfg.AIAPIKey, cfg.LocalAIURL, store)
 	ticketService := ticket.NewService(store, chataiService)
 	feedService := feed.NewService(store)
 	defer feedService.Stop()
