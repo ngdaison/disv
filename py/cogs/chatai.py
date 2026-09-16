@@ -73,6 +73,14 @@ class ChatAI(commands.Cog):
             print("[ChatAI] No AI API or Local AI configured")
             return
 
+        if not hasattr(self, '_processed_msg_ids'):
+            self._processed_msg_ids = set()
+        if message.id in self._processed_msg_ids:
+            return
+        self._processed_msg_ids.add(message.id)
+        if len(self._processed_msg_ids) > 1000:
+            self._processed_msg_ids.clear()
+
         # Load system prompt if available
         system_prompt = ""
         if os.path.exists('train.txt'):
@@ -82,7 +90,33 @@ class ChatAI(commands.Cog):
             except Exception:
                 system_prompt = ""
 
-        full_prompt = (system_prompt + "\n\nNgười dùng hỏi:\n" + message.content) if system_prompt else message.content
+        # Lấy tối đa 10 tin nhắn gần nhất trước tin nhắn này trong kênh
+        history_lines = []
+        try:
+            async for old_msg in message.channel.history(limit=10, before=message):
+                if old_msg and old_msg.content:
+                    c = old_msg.content.strip()
+                    if c.startswith('/') or c.startswith('!') or c.startswith('.'):
+                        continue
+                    sender = "AI KiyoVN" if (self.bot.user and old_msg.author.id == self.bot.user.id) else old_msg.author.display_name
+                    history_lines.insert(0, f"- {sender}: {c}")
+        except Exception as e:
+            print(f"[ChatAI] Lỗi lấy lịch sử tin nhắn: {e}")
+
+        prompt_parts = []
+        if system_prompt:
+            prompt_parts.append(system_prompt)
+            prompt_parts.append("\n\n")
+
+        if history_lines:
+            prompt_parts.append("Ngữ cảnh lịch sử trò chuyện gần đây trong kênh (tối đa 10 tin nhắn trước):\n")
+            for h in history_lines:
+                prompt_parts.append(h + "\n")
+            prompt_parts.append("\n")
+
+        prompt_parts.append(f"Tin nhắn mới nhất từ {message.author.display_name}:\n{message.content}\n\n")
+        prompt_parts.append("Dựa trên toàn bộ thông tin về KiyoVN và ngữ cảnh lịch sử trò chuyện ở trên, hãy trả lời tin nhắn mới nhất thật ngắn gọn, chính xác, tự nhiên và đúng trọng tâm:")
+        full_prompt = "".join(prompt_parts)
         reply = ''
 
         # 1. Try Local AI API first

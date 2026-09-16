@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"log"
+	"net"
 	"os"
 	"os/signal"
 	"syscall"
@@ -26,6 +27,13 @@ import (
 )
 
 func main() {
+	// Khóa đơn tiến trình (Single-Instance Lock): Chống chạy đè 2 bot dẫn tới trả lời lặp 2 lần
+	lockListener, err := net.Listen("tcp", "127.0.0.1:28472")
+	if err != nil {
+		log.Fatalf("CẢNH BÁO: Đã có một tiến trình botdis.exe khác đang hoạt động! Đang dừng để tránh trả lời lặp 2 lần tin nhắn.")
+	}
+	defer lockListener.Close()
+
 	log.Println("Đang khởi động Bot Discord bằng Golang...")
 
 	cfg, err := config.LoadConfig()

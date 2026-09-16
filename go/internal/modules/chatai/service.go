@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 	"unicode"
 
@@ -20,10 +21,11 @@ import (
 var httpClient = &http.Client{Timeout: 30 * time.Second}
 
 type Service struct {
-	apiKey       string
-	localAIURL   string
-	systemPrompt string
-	store        *storage.MySQLStore
+	apiKey        string
+	localAIURL    string
+	systemPrompt  string
+	store         *storage.MySQLStore
+	processedMsgs sync.Map
 }
 
 func NewService(apiKey, localAIURL string, store *storage.MySQLStore) *Service {
@@ -40,12 +42,29 @@ func NewService(apiKey, localAIURL string, store *storage.MySQLStore) *Service {
 		localAIURL = "http://localhost:6660/api"
 	}
 
-	return &Service{
+	svc := &Service{
 		apiKey:       apiKey,
 		localAIURL:   localAIURL,
 		systemPrompt: prompt,
 		store:        store,
 	}
+
+	// Tự động dọn dẹp cache ID tin nhắn mỗi 5 phút để giải phóng bộ nhớ
+	go func() {
+		ticker := time.NewTicker(5 * time.Minute)
+		defer ticker.Stop()
+		for range ticker.C {
+			now := time.Now()
+			svc.processedMsgs.Range(func(key, value any) bool {
+				if t, ok := value.(time.Time); ok && now.Sub(t) > 10*time.Minute {
+					svc.processedMsgs.Delete(key)
+				}
+				return true
+			})
+		}
+	}()
+
+	return svc
 }
 
 func (s *Service) HandleMessage(sess *discordgo.Session, m *discordgo.MessageCreate) {
@@ -69,6 +88,11 @@ func (s *Service) HandleMessage(sess *discordgo.Session, m *discordgo.MessageCre
 	}
 
 	if s.localAIURL == "" && s.apiKey == "" {
+		return
+	}
+
+	// Chống trùng lặp tin nhắn: nếu tin nhắn này đang hoặc đã được xử lý thì bỏ qua
+	if _, loaded := s.processedMsgs.LoadOrStore(m.ID, time.Now()); loaded {
 		return
 	}
 
@@ -205,10 +229,69 @@ func (s *Service) generateAndReply(sess *discordgo.Session, m *discordgo.Message
 		cleanContent = "Xin chào!"
 	}
 
-	userPrompt := cleanContent
-	if s.systemPrompt != "" {
-		userPrompt = s.systemPrompt + "\n\nNgười dùng hỏi:\n" + cleanContent
+	// Lấy tối đa 10 tin nhắn gần nhất trước tin nhắn này trong kênh để làm ngữ cảnh nhớ lại
+	var historyLines []string
+	if sess != nil {
+		msgs, err := sess.ChannelMessages(m.ChannelID, 10, m.ID, "", "")
+		if err == nil && len(msgs) > 0 {
+			for i := len(msgs) - 1; i >= 0; i-- {
+				oldMsg := msgs[i]
+				if oldMsg == nil {
+					continue
+				}
+				c := strings.TrimSpace(oldMsg.Content)
+				if c == "" {
+					continue
+				}
+				// Bỏ qua các tin nhắn lệnh bot
+				if strings.HasPrefix(c, "/") || strings.HasPrefix(c, "!") || strings.HasPrefix(c, ".") {
+					continue
+				}
+				if sess.State != nil && sess.State.User != nil {
+					c = strings.ReplaceAll(c, fmt.Sprintf("<@%s>", sess.State.User.ID), "")
+					c = strings.ReplaceAll(c, fmt.Sprintf("<@!%s>", sess.State.User.ID), "")
+					c = strings.TrimSpace(c)
+				}
+				if c == "" {
+					continue
+				}
+
+				senderName := "Người dùng"
+				if oldMsg.Author != nil {
+					if sess.State != nil && sess.State.User != nil && oldMsg.Author.ID == sess.State.User.ID {
+						senderName = "AI KiyoVN"
+					} else if oldMsg.Author.Username != "" {
+						senderName = oldMsg.Author.Username
+					}
+				}
+				historyLines = append(historyLines, fmt.Sprintf("- %s: %s", senderName, c))
+			}
+		}
 	}
+
+	var sb strings.Builder
+	if s.systemPrompt != "" {
+		sb.WriteString(s.systemPrompt)
+		sb.WriteString("\n\n")
+	}
+
+	if len(historyLines) > 0 {
+		sb.WriteString("Ngữ cảnh lịch sử trò chuyện gần đây trong kênh (tối đa 10 tin nhắn trước):\n")
+		for _, h := range historyLines {
+			sb.WriteString(h)
+			sb.WriteString("\n")
+		}
+		sb.WriteString("\n")
+	}
+
+	userName := "Người dùng"
+	if m.Author != nil && m.Author.Username != "" {
+		userName = m.Author.Username
+	}
+
+	sb.WriteString(fmt.Sprintf("Tin nhắn mới nhất từ %s:\n%s\n\n", userName, cleanContent))
+	sb.WriteString("Dựa trên toàn bộ thông tin về KiyoVN và ngữ cảnh lịch sử trò chuyện ở trên, hãy trả lời tin nhắn mới nhất thật ngắn gọn, chính xác, tự nhiên và đúng trọng tâm:")
+	userPrompt := sb.String()
 
 	var replyText string
 	var err error
